@@ -1,0 +1,1074 @@
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+PROMPT = "introduce ffmpeg in details"
+COMMON_ARGS = ["GPU", "1", "1", "100"]
+
+DEFAULT_MODELS_ROOT = r"D:\data\models"
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+SCRIPT_ROOT_DEFAULT = SCRIPT_DIR.parent
+TEST_IMAGE_PATH = SCRIPT_DIR / "test.jpg"
+TEST_OCR2_IMAGE_PATH = SCRIPT_DIR / "test_ocr2.png"
+
+TEXT_EXE_REL = (
+    Path("openvino.genai")
+    / "build"
+    / "samples"
+    / "cpp"
+    / "text_generation"
+    / "RelWithDebInfo"
+    / "greedy_causal_lm.exe"
+)
+TEXT_WORK_DIR_REL = Path("openvino") / "bin" / "intel64" / "RelWithDebInfo"
+MODELING_SAMPLE_DIR = (
+    Path("openvino.genai")
+    / "build"
+    / "src"
+    / "cpp"
+    / "src"
+    / "modeling"
+    / "samples"
+    / "RelWithDebInfo"
+)
+MODELING_QWEN_EXE_REL = MODELING_SAMPLE_DIR / "modeling_qwen3_vl.exe"
+MODELING_QWEN3_5_EXE_REL = MODELING_SAMPLE_DIR / "modeling_qwen3_5.exe"
+MODELING_DEEPSEEK_OCR2_EXE_REL = MODELING_SAMPLE_DIR / "modeling_deepseek_ocr2.exe"
+MODELING_ZIMAGE_EXE_REL = MODELING_SAMPLE_DIR / "modeling_zimage.exe"
+MODELING_WAN_T2V_EXE_REL = MODELING_SAMPLE_DIR / "modeling_wan_t2v.exe"
+MODELING_DFLASH_EXE_REL = MODELING_SAMPLE_DIR / "modeling_dflash.exe"
+MODELING_QWEN3_TTS_EXE_REL = MODELING_SAMPLE_DIR / "modeling_qwen3_tts.exe"
+
+MODELING_ULT_EXE_REL = (
+    Path("openvino.genai")
+    / "build"
+    / "src"
+    / "cpp"
+    / "src"
+    / "modeling"
+    / "RelWithDebInfo"
+    / "test_modeling_api.exe"
+)
+PATH_PREPEND_REL = Path("openvino.genai") / "build" / "openvino_genai"
+
+TEXT_COMMAND_ARGS = [PROMPT, *COMMON_ARGS]
+MODELING_QWEN_ARGS = [str(TEST_IMAGE_PATH), "describe this picture", "GPU", "100"]
+MODELING_DEEPSEEK_OCR2_ARGS = [
+    str(TEST_OCR2_IMAGE_PATH),
+    "<image>\n<|grounding|>Convert the document to markdown.",
+    "GPU",
+    "300",
+]
+MODELING_ZIMAGE_ARGS = [
+    "a cute cat",
+    "cat2.bmp",
+    "GPU",
+    "256",
+    "256",
+    "8",
+    "2",
+    "0.0",
+]
+MODELING_WAN_T2V_ARGS = [
+    "a cat playing piano",
+    "wan_t2v_out",
+    "GPU",
+    "256",
+    "384",
+    "33",
+    "30",
+    "0",
+    "5.0",
+    "",
+    "512",
+]
+
+
+MODELING_DFLASH_ARGS = [
+    "__DRAFT_MODEL__",
+    PROMPT,
+    "GPU",
+    "100",
+    "16",
+]
+MODELING_QWEN3_TTS_ARGS = [
+    "我爱北京天安门",
+    "qwen3_tts_out.wav",
+    "GPU",
+]
+MODELING_QWEN3_5_TEXT_ARGS = [
+    "--cache-model",
+    "--mode",
+    "text",
+    "--prompt",
+    "write opencl gemm kernel and host code: ",
+    "--output-tokens",
+    "300",
+]
+MODELING_QWEN3_5_VL_ARGS = [
+    "--cache-model",
+    "--mode",
+    "vl",
+    "--image",
+    str(TEST_IMAGE_PATH),
+    "--prompt",
+    "describe this picture in details: ",
+    "--output-tokens",
+    "300",
+]
+
+QUANT_DEFAULT_ARGS = ["int4_asym", "128", "int8_asym"]
+QUANT_INT4_CHANNEL_WISE_ARGS = ["int4_asym", "-1", "int8_asym"]
+QUANT_INT8_CHANNEL_WISE_ARGS = ["int8_asym", "-1", "int8_asym"]
+QWEN3_5_35B_EXTRA_ENV = {
+    "OV_GPU_MOE_DISABLE_ONEDNN": "1",
+    "OV_GENAI_USE_MODELING_API": "1",
+    "OV_GENAI_INFLIGHT_QUANT_MODE": "int4_asym",
+    "OV_GENAI_INFLIGHT_QUANT_GROUP_SIZE": "128",
+    "OV_GENAI_INFLIGHT_QUANT_BACKUP_MODE": "int4_asym",
+}
+
+TEST_SPECS: List[Dict[str, Any]] = [
+    {
+        "name": "Modeling API Unit Tests",
+        "model_rel": None,
+        "exe_rel": MODELING_ULT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": ["--gtest_filter=*"],
+        "is_ult": True,
+    },
+    {
+        "name": "Huggingface Qwen3-0.6B",
+        "model_rel": Path("Huggingface") / "Qwen3-0.6B",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": TEXT_COMMAND_ARGS.copy(),
+    },
+    {
+        "name": "Huggingface Qwen3-4B",
+        "model_rel": Path("Huggingface") / "Qwen3-4B",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": TEXT_COMMAND_ARGS.copy(),
+    },
+    {
+        "name": "Huggingface Qwen3-4B in-flight quantized (int4_asym, gs128)",
+        "model_rel": Path("Huggingface") / "Qwen3-4B",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": TEXT_COMMAND_ARGS.copy() + QUANT_DEFAULT_ARGS,
+    },
+    {
+        "name": "Huggingface Qwen3-4B in-flight quantized (int8_asym, channel-wise)",
+        "model_rel": Path("Huggingface") / "Qwen3-4B",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": TEXT_COMMAND_ARGS.copy() + QUANT_INT8_CHANNEL_WISE_ARGS,
+    },
+    {
+        "name": "Huggingface Qwen3-4B in-flight quantized (int4_asym, channel-wise)",
+        "model_rel": Path("Huggingface") / "Qwen3-4B",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": TEXT_COMMAND_ARGS.copy() + QUANT_INT4_CHANNEL_WISE_ARGS,
+    },
+    {
+        "name": "Huggingface SmolLM3-3B",
+        "model_rel": Path("Huggingface") / "SmolLM3-3B",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": TEXT_COMMAND_ARGS.copy(),
+    },
+    {
+        "name": "Huggingface Youtu-LLM-2B",
+        "model_rel": Path("Huggingface") / "Youtu-LLM-2B",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": TEXT_COMMAND_ARGS.copy(),
+    },
+    {
+        "name": "GGUF Qwen3-0.6B-BF16",
+        "model_rel": Path("gguf") / "Qwen3-0.6B-BF16.gguf",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": TEXT_COMMAND_ARGS.copy(),
+    },
+    {
+        "name": "GGUF Qwen3-4B-BF16",
+        "model_rel": Path("gguf") / "Qwen3-4B-BF16.gguf",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": TEXT_COMMAND_ARGS.copy(),
+    },
+    {
+        "name": "GGUF Qwen3-30B-A3B",
+        "model_rel": Path("gguf") / "Qwen3-30B-A3B-Instruct-2507-Q4_0.gguf",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": TEXT_COMMAND_ARGS.copy(),
+    },
+    # {
+    #     "name": "GGUF SmolLM3-3B-BF16",
+    #     "model_rel": Path("gguf") / "SmolLM3-3B-BF16.gguf",
+    #     "exe_rel": TEXT_EXE_REL,
+    #     "work_dir_rel": TEXT_WORK_DIR_REL,
+    #     "command_args": TEXT_COMMAND_ARGS.copy(),
+    # },
+    {
+        "name": "Huggingface Qwen3-VL-2B-Instruct",
+        "model_rel": Path("Huggingface") / "Qwen3-VL-2B-Instruct",
+        "exe_rel": MODELING_QWEN_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN_ARGS.copy(),
+    },
+    {
+        "name": "Huggingface Qwen3-VL-4B-Instruct",
+        "model_rel": Path("Huggingface") / "Qwen3-VL-4B-Instruct",
+        "exe_rel": MODELING_QWEN_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN_ARGS.copy(),
+    },
+    {
+        "name": "Huggingface DeepSeek-OCR-2",
+        "model_rel": Path("Huggingface") / "DeepSeek-OCR-2",
+        "exe_rel": MODELING_DEEPSEEK_OCR2_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_DEEPSEEK_OCR2_ARGS.copy(),
+    },
+    {
+       "name": "Huggingface Qwen3-VL-8B-Instruct-inflight-quantized (int4_asym, gs128)",
+       "name": "Huggingface Qwen3-VL-8B-all-inflight-quantized (int4_asym, gs128)",
+       "model_rel": Path("Huggingface") / "Qwen3-VL-8B-Instruct",
+       "exe_rel": MODELING_QWEN_EXE_REL,
+       "work_dir_rel": MODELING_SAMPLE_DIR,
+       # [VISION_QUANT] [VISION_GS] [VISION_BACKUP] [TEXT_QUANT] [TEXT_GS] [TEXT_BACKUP]
+       "command_args": MODELING_QWEN_ARGS.copy() + [
+           "int4_asym", "-1", "int8_asym",
+           "int4_asym", "128", "int8_asym"
+       ],
+    },
+    {
+       "name": "Huggingface Qwen3-VL-8B-only-text-inflight-quantized (int4_asym, gs128)",
+       "model_rel": Path("Huggingface") / "Qwen3-VL-8B-Instruct",
+       "exe_rel": MODELING_QWEN_EXE_REL,
+       "work_dir_rel": MODELING_SAMPLE_DIR,
+       # [VISION_QUANT] [VISION_GS] [VISION_BACKUP] [TEXT_QUANT] [TEXT_GS] [TEXT_BACKUP]
+       "command_args": MODELING_QWEN_ARGS.copy() + [
+           "none", "-1", "none",
+           "int4_asym", "128", "int8_asym"
+       ],
+    },
+    {
+        "name": "Huggingface Z-Image-Turbo",
+        "model_rel": Path("Huggingface") / "Z-Image-Turbo",
+        "exe_rel": MODELING_ZIMAGE_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_ZIMAGE_ARGS.copy(),
+    },
+    #{
+    #    "name": "Huggingface Z-Image-Turbo (int4_sym, gs128)",
+    #    "model_rel": Path("Huggingface") / "Z-Image-Turbo",
+    #    "exe_rel": MODELING_ZIMAGE_EXE_REL,
+    #    "work_dir_rel": MODELING_SAMPLE_DIR,
+    #    # [DUMP_DIR] [TEXT_QUANT] [TEXT_GS] [TEXT_BACKUP] [DIT_QUANT] [DIT_GS] [DIT_BACKUP] [VAE_QUANT] [VAE_GS] [VAE_BACKUP]
+    #    "command_args": MODELING_ZIMAGE_ARGS.copy() + [
+    #        "int4_sym", "128", "int8_asym",
+    #        "int4_sym", "128", "none",
+    #        "none", "-1", "none"
+    #    ],
+    #},
+    {
+        "name": "Huggingface Wan2.1-T2V-1.3B-Diffusers",
+        "model_rel": Path("Huggingface") / "Wan2.1-T2V-1.3B-Diffusers",
+        "exe_rel": MODELING_WAN_T2V_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_WAN_T2V_ARGS.copy(),
+    },
+    {
+        "name": "Huggingface Qwen3-4B DFlash (block_size=16)",
+        "model_rel": Path("Huggingface") / "Qwen3-4B",
+        "draft_model_rel": Path("Huggingface") / "Qwen3-4B-DFlash-b16",
+        "exe_rel": MODELING_DFLASH_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_DFLASH_ARGS.copy(),
+        "is_dflash": True,
+    },
+    {
+        "name": "Huggingface Qwen3-MOE-4x0.6B-2.4B-legacy-path inflight-quantized (int4_asym, gs128)",
+        "model_rel": Path("Huggingface") / "Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-V1.2",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": TEXT_COMMAND_ARGS.copy(),
+        "extra_env": {"OV_GENAI_INFLIGHT_QUANT_MODE": "int4_asym",
+                      "OV_GENAI_INFLIGHT_QUANT_GROUP_SIZE": "128",
+                      "OV_GENAI_USE_MODELING_API": "0"},
+    },
+    {
+        "name": "Huggingface Qwen3-MOE-4x0.6B-2.4B-modeling-api inflight-quantized (int4_asym, gs128)",
+        "model_rel": Path("Huggingface") / "Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-V1.2",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": TEXT_COMMAND_ARGS.copy() + QUANT_DEFAULT_ARGS,
+    },
+    {
+        "name": "Huggingface Qwen3-MOE-4x0.6B-2.4B-modeling-api inflight-quantized (int4_asym, channel-wise)",
+        "model_rel": Path("Huggingface") / "Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-V1.2",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": TEXT_COMMAND_ARGS.copy() + QUANT_INT4_CHANNEL_WISE_ARGS,
+    },
+    {
+        "name": "Huggingface Qwen3-30B-A3B-Instruct-2507 inflight-quantized (int4_asym, gs128)",
+        "model_rel": Path("Huggingface") / "Qwen3-30B-A3B-Instruct-2507",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": TEXT_COMMAND_ARGS.copy() + QUANT_DEFAULT_ARGS,
+    },
+    {
+        "name": "Huggingface Qwen3-TTS-12Hz-1.7B-Base",
+        "model_rel": Path("Huggingface") / "Qwen3-TTS-12Hz-1.7B-Base",
+        "exe_rel": MODELING_QWEN3_TTS_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN3_TTS_ARGS.copy(),
+    },
+    {
+        "name": "Huggingface Qwen3.5-0.8B modeling_qwen3_5 text",
+        "model_rel": Path("Huggingface") / "Qwen3.5-0.8B",
+        "exe_rel": MODELING_QWEN3_5_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN3_5_TEXT_ARGS.copy(),
+        "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
+        "use_named_model_arg": True,
+    },
+    {
+        "name": "Huggingface Qwen3.5-0.8B modeling_qwen3_5 vl",
+        "model_rel": Path("Huggingface") / "Qwen3.5-0.8B",
+        "exe_rel": MODELING_QWEN3_5_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN3_5_VL_ARGS.copy(),
+        "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
+        "use_named_model_arg": True,
+    },
+    {
+        "name": "Huggingface Qwen3.5-2B modeling_qwen3_5 text",
+        "model_rel": Path("Huggingface") / "Qwen3.5-2B",
+        "exe_rel": MODELING_QWEN3_5_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN3_5_TEXT_ARGS.copy(),
+        "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
+        "use_named_model_arg": True,
+    },
+    {
+        "name": "Huggingface Qwen3.5-2B modeling_qwen3_5 vl",
+        "model_rel": Path("Huggingface") / "Qwen3.5-2B",
+        "exe_rel": MODELING_QWEN3_5_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN3_5_VL_ARGS.copy(),
+        "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
+        "use_named_model_arg": True,
+    },
+    {
+        "name": "Huggingface Qwen3.5-4B modeling_qwen3_5 text",
+        "model_rel": Path("Huggingface") / "Qwen3.5-4B",
+        "exe_rel": MODELING_QWEN3_5_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN3_5_TEXT_ARGS.copy(),
+        "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
+        "use_named_model_arg": True,
+    },
+    {
+        "name": "Huggingface Qwen3.5-4B modeling_qwen3_5 vl",
+        "model_rel": Path("Huggingface") / "Qwen3.5-4B",
+        "exe_rel": MODELING_QWEN3_5_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN3_5_VL_ARGS.copy(),
+        "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
+        "use_named_model_arg": True,
+    },
+    {
+        "name": "Huggingface Qwen3.5-9B modeling_qwen3_5 text",
+        "model_rel": Path("Huggingface") / "Qwen3.5-9B",
+        "exe_rel": MODELING_QWEN3_5_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN3_5_TEXT_ARGS.copy(),
+        "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
+        "use_named_model_arg": True,
+    },
+    {
+        "name": "Huggingface Qwen3.5-9B modeling_qwen3_5 vl",
+        "model_rel": Path("Huggingface") / "Qwen3.5-9B",
+        "exe_rel": MODELING_QWEN3_5_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN3_5_VL_ARGS.copy(),
+        "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
+        "use_named_model_arg": True,
+    },
+    {
+        "name": "Huggingface Qwen3.5-27B modeling_qwen3_5 text",
+        "model_rel": Path("Huggingface") / "Qwen3.5-27B",
+        "exe_rel": MODELING_QWEN3_5_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN3_5_TEXT_ARGS.copy(),
+        "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
+        "use_named_model_arg": True,
+    },
+    {
+        "name": "Huggingface Qwen3.5-27B modeling_qwen3_5 vl",
+        "model_rel": Path("Huggingface") / "Qwen3.5-27B",
+        "exe_rel": MODELING_QWEN3_5_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN3_5_VL_ARGS.copy(),
+        "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
+        "use_named_model_arg": True,
+    },
+    {
+        "name": "Huggingface Qwen3.5-35B-A3B-Base modeling_qwen3_5 text",
+        "model_rel": Path("Huggingface") / "Qwen3.5-35B-A3B-Base",
+        "exe_rel": MODELING_QWEN3_5_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN3_5_TEXT_ARGS.copy(),
+        "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
+        "use_named_model_arg": True,
+    },
+    {
+        "name": "Huggingface Qwen3.5-35B-A3B-Base modeling_qwen3_5 vl",
+        "model_rel": Path("Huggingface") / "Qwen3.5-35B-A3B-Base",
+        "exe_rel": MODELING_QWEN3_5_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN3_5_VL_ARGS.copy(),
+        "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
+        "use_named_model_arg": True,
+    },
+    {
+        "name": "Huggingface Qwen3.5-35B-A3B modeling_qwen3_5 text",
+        "model_rel": Path("Huggingface") / "Qwen3.5-35B-A3B",
+        "exe_rel": MODELING_QWEN3_5_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN3_5_TEXT_ARGS.copy(),
+        "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
+        "use_named_model_arg": True,
+    },
+    {
+        "name": "Huggingface Qwen3.5-35B-A3B modeling_qwen3_5 vl",
+        "model_rel": Path("Huggingface") / "Qwen3.5-35B-A3B",
+        "exe_rel": MODELING_QWEN3_5_EXE_REL,
+        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "command_args": MODELING_QWEN3_5_VL_ARGS.copy(),
+        "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
+        "use_named_model_arg": True,
+    },
+]
+
+def build_env(path_entries: List[str], extra_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    env = os.environ.copy()
+    original_path = env.get("PATH", "")
+    joined = ";".join(entry for entry in path_entries if entry)
+    env["PATH"] = f"{joined};{original_path}" if original_path else joined
+    # Set OV_GENAI_USE_MODELING_API from extra_env if present, else from os.environ, else default to "1"
+    if extra_env and "OV_GENAI_USE_MODELING_API" in extra_env:
+        env["OV_GENAI_USE_MODELING_API"] = extra_env["OV_GENAI_USE_MODELING_API"]
+    else:
+        env["OV_GENAI_USE_MODELING_API"] = os.environ.get("OV_GENAI_USE_MODELING_API", "1")
+    if extra_env:
+        for k, v in extra_env.items():
+            if k != "OV_GENAI_USE_MODELING_API":
+                env[k] = v
+    return env
+
+
+def extract_performance(output: str) -> str:
+    labels = [
+        "Prompt token size:",
+        "Output token size:",
+        "Load time:",
+        "Generate time:",
+        "Tokenization time:",
+        "Detokenization time:",
+        "TTFT:",
+        "TPOT:",
+        "Throughput:",
+    ]
+    perf_lines: List[str] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        for label in labels:
+            if stripped.startswith(label):
+                perf_lines.append(stripped)
+                break
+    return "\n".join(perf_lines).strip() if perf_lines else "Not found in output."
+
+
+def extract_generated_text(output: str) -> str:
+    marker = "Generated text:"
+    idx = output.find(marker)
+    if idx == -1:
+        # If marker not found, return all non-empty lines
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        return "\n".join(lines) if lines else "Not found in output."
+    text_block = output[idx + len(marker) :].lstrip("\r\n")
+    return text_block.strip() if text_block.strip() else "Not found in output."
+
+
+def build_command(exe_path: str, model_path: str, command_args: List[str]) -> List[str]:
+    return [exe_path, model_path, *command_args]
+
+
+def command_to_string(args: List[str]) -> str:
+    def quote(arg: str) -> str:
+        return f"\"{arg}\"" if " " in arg or "\t" in arg else arg
+
+    return " ".join(quote(arg) for arg in args)
+
+
+def format_duration(delta: _dt.timedelta) -> str:
+    total_seconds = delta.total_seconds()
+    if total_seconds < 60:
+        return f"{total_seconds:.2f}s"
+    hours = int(total_seconds // 3600)
+    minutes = int((total_seconds % 3600) // 60)
+    seconds = total_seconds % 60
+    if hours > 0:
+        return f"{hours}h{minutes}m{seconds:05.2f}s"
+    return f"{minutes}m{seconds:05.2f}s"
+
+
+def extract_label_value(block: str, label: str) -> str:
+    marker = f"{label}:"
+    for line in block.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(marker):
+            value = stripped[len(marker) :].strip()
+            return value if value else "N/A"
+    return "N/A"
+
+
+def filter_ult_output(output: str) -> str:
+    """Filter out [DEBUG] lines from ULT output."""
+    lines = output.splitlines()
+    filtered = [line for line in lines if not line.strip().startswith("[DEBUG]")]
+    return "\n".join(filtered)
+
+
+def format_ult_output(output: str) -> str:
+    """Format ULT output for markdown report."""
+    filtered = filter_ult_output(output)
+    lines = filtered.splitlines()
+
+    # Extract summary information
+    summary_lines: List[str] = []
+    test_results: List[str] = []
+    in_test_section = False
+
+    for line in lines:
+        stripped = line.strip()
+        # Capture gtest summary lines
+        if stripped.startswith("[==========]") or stripped.startswith("[----------]"):
+            summary_lines.append(stripped)
+            in_test_section = True
+        elif stripped.startswith("[  PASSED  ]") or stripped.startswith("[  FAILED  ]"):
+            summary_lines.append(stripped)
+        elif stripped.startswith("[       OK ]") or stripped.startswith("[   FAIL   ]"):
+            test_results.append(stripped)
+        elif stripped.startswith("[ RUN      ]"):
+            test_results.append(stripped)
+        elif in_test_section and stripped:
+            # Keep other relevant lines during test execution
+            if not stripped.startswith("[DEBUG]"):
+                test_results.append(stripped)
+
+    return filtered
+
+
+def parse_args() -> argparse.Namespace:
+    script_root = SCRIPT_ROOT_DEFAULT
+    parser = argparse.ArgumentParser(
+        description="Run OpenVINO GenAI greedy_causal_lm tests and capture key outputs.",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python auto_tests.py\n"
+            "  python auto_tests.py --root ..\n"
+            "  python auto_tests.py --root D:\\data\\code\\Openvino_new_arch_poc\\openvino-new-arch\n"
+            "  python auto_tests.py --root .. --list\n"
+            "  python auto_tests.py --root .. --tests 0,1,2\n"
+            "  python auto_tests.py --root .. --tests 0 1 2\n"
+            "  python auto_tests.py --root .. --tests 1~5,7,8~10\n"
+            "  python auto_tests.py --root .. --models-root D:\\data\\models\n"
+        ),
+    )
+    parser.add_argument(
+        "--root",
+        default=str(script_root),
+        help=(
+            "Root folder path for openvino-new-arch. "
+            "Defaults to the parent of this script."
+        ),
+    )
+    parser.add_argument(
+        "--models-root",
+        default=DEFAULT_MODELS_ROOT,
+        help=f"Root folder path for model files (default: {DEFAULT_MODELS_ROOT}).",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List available tests and exit.",
+    )
+    parser.add_argument(
+        "--tests",
+        nargs="+",
+        help="Test indices to run. Supports individual indices (0,1,2), ranges (1~5), or 'all'. "
+             "Examples: '0,1,2', '1~5,7,8~10', 'all'. If omitted, run all.",
+    )
+    return parser.parse_args()
+
+
+def list_tests(models_root: Path) -> None:
+    print(f"Models root: {models_root}")
+    print("Available tests:")
+    for idx, spec in enumerate(TEST_SPECS):
+        model_info = spec['model_rel'] if spec['model_rel'] else "N/A (ULT)"
+        print(
+            f"[{idx}] {spec['name']} -> {model_info} (exe: {spec['exe_rel']})"
+        )
+
+
+def parse_test_indices(raw_items: List[str], max_index: int) -> List[int]:
+    tokens: List[str] = []
+    for raw in raw_items:
+        tokens.extend(part.strip() for part in raw.split(",") if part.strip())
+    if not tokens:
+        raise ValueError("No test indices provided.")
+
+    if any(token.lower() == "all" for token in tokens):
+        return list(range(max_index + 1))
+
+    indices: List[int] = []
+    for token in tokens:
+        # Support range syntax: "1~5" expands to 1,2,3,4,5
+        if "~" in token:
+            parts = token.split("~")
+            if len(parts) != 2:
+                raise ValueError(f"Invalid range syntax: {token}")
+            try:
+                start = int(parts[0].strip())
+                end = int(parts[1].strip())
+            except ValueError as exc:
+                raise ValueError(f"Invalid range syntax: {token}") from exc
+            if start < 0 or start > max_index:
+                raise ValueError(f"Range start out of bounds: {start}")
+            if end < 0 or end > max_index:
+                raise ValueError(f"Range end out of bounds: {end}")
+            if start > end:
+                raise ValueError(f"Range start must be <= end: {token}")
+            indices.extend(range(start, end + 1))
+        else:
+            try:
+                idx = int(token)
+            except ValueError as exc:
+                raise ValueError(f"Invalid test index: {token}") from exc
+            if idx < 0 or idx > max_index:
+                raise ValueError(f"Test index out of range: {idx}")
+            indices.append(idx)
+    return indices
+
+
+def resolve_tests(
+    root: Path, models_root: Path, indices: Optional[List[int]]
+) -> List[Dict[str, Any]]:
+    selected = indices if indices is not None else list(range(len(TEST_SPECS)))
+    resolved: List[Dict[str, Any]] = []
+    for idx in selected:
+        spec = TEST_SPECS[idx]
+        # Handle tests without model (like ULT)
+        if spec["model_rel"] is None:
+            model_path = None
+        else:
+            model_path = models_root / spec["model_rel"]
+        
+        # Handle DFlash tests with draft model
+        draft_model_path = None
+        if spec.get("is_dflash") and "draft_model_rel" in spec:
+            draft_model_path = models_root / spec["draft_model_rel"]
+        
+        resolved_test = {
+            "index": str(idx),
+            "name": spec["name"],
+            "exe": str(root / spec["exe_rel"]),
+            "work_dir": str(root / spec["work_dir_rel"]),
+            "model": str(model_path) if model_path else None,
+            "command_args": spec["command_args"],
+        }
+        if "extra_env" in spec:
+            resolved_test["extra_env"] = spec["extra_env"].copy()
+        else:
+            resolved_test["extra_env"] = {}
+        if spec.get("is_ult"):
+            resolved_test["is_ult"] = True
+            # Qwen3VLE2E.PrefillAndDecode requires QWEN3_VL_MODEL_DIR
+            qwen3_vl_candidates = [
+                models_root / "Huggingface" / "Qwen3-VL-2B-Instruct",
+                models_root / "Huggingface" / "Qwen3-VL-4B-Instruct",
+            ]
+            for cand in qwen3_vl_candidates:
+                if cand.is_dir():
+                    resolved_test["extra_env"]["QWEN3_VL_MODEL_DIR"] = str(cand)
+                    break
+        if spec.get("is_dflash"):
+            resolved_test["is_dflash"] = True
+            resolved_test["draft_model"] = str(draft_model_path) if draft_model_path else None
+        if spec.get("use_named_model_arg"):
+            resolved_test["use_named_model_arg"] = True
+        resolved.append(resolved_test)
+    return resolved
+
+
+def main() -> int:
+    args = parse_args()
+    root = Path(args.root)
+    if not root.is_absolute():
+        root = (Path.cwd() / root).resolve()
+    models_root = Path(args.models_root)
+
+    if args.list:
+        list_tests(models_root)
+        return 0
+
+    if not root.exists():
+        print(f"Root folder not found: {root}", file=sys.stderr)
+        return 2
+
+    if args.tests:
+        try:
+            indices = parse_test_indices(args.tests, len(TEST_SPECS) - 1)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    else:
+        indices = None
+
+    tests = resolve_tests(root, models_root, indices)
+    path_entries = [
+        str(root / PATH_PREPEND_REL),
+        str(root / TEXT_WORK_DIR_REL),
+    ]
+    path_set_cmd = f"set PATH={';'.join(path_entries)};%PATH%"
+
+    timestamp = _dt.datetime.now()
+    stamp_for_name = timestamp.strftime("%Y%m%d_%H%M%S")
+    stamp_for_title = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+    reports_dir = root.parent / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    report_path = reports_dir / f"test_report_{stamp_for_name}.md"
+
+    report_lines: List[str] = [
+        f"# Test Report {stamp_for_title}",
+        "",
+    ]
+    total_start = _dt.datetime.now()
+    timing_entries: List[Dict[str, Any]] = []
+    failed_tests: List[tuple] = []
+
+    for test in tests:
+        exe_path = Path(test["exe"])
+        work_dir = Path(test["work_dir"])
+
+        if not exe_path.is_file():
+            print(f"Executable not found: {exe_path}", file=sys.stderr)
+            return 2
+        if not work_dir.is_dir():
+            print(f"Working directory not found: {work_dir}", file=sys.stderr)
+            return 2
+
+        command_args = list(test["command_args"])
+
+        # Handle Z-Image test: add timestamp to output filename
+        is_zimage_test = "Z-Image" in test["name"]
+        zimage_output_filename: Optional[str] = None
+        if is_zimage_test and len(command_args) >= 2:
+            # command_args[1] is the output filename (e.g., "cat2.bmp")
+            original_filename = command_args[1]
+            name_part, ext_part = os.path.splitext(original_filename)
+            zimage_output_filename = f"{name_part}_{stamp_for_name}{ext_part}"
+            command_args[1] = zimage_output_filename
+
+        # Handle Wan T2V test: add timestamp to output folder name
+        is_wan_t2v_test = "Wan2.1-T2V" in test["name"]
+        wan_t2v_output_folder: Optional[str] = None
+        if is_wan_t2v_test and len(command_args) >= 2:
+            # command_args[1] is the output folder (e.g., "wan_t2v_out")
+            original_folder = command_args[1]
+            wan_t2v_output_folder = f"{original_folder}_{stamp_for_name}"
+            command_args[1] = wan_t2v_output_folder
+
+        # Handle Qwen3-TTS test: add timestamp to output wav filename
+        is_qwen3_tts_test = "Qwen3-TTS" in test["name"]
+        qwen3_tts_output_filename: Optional[str] = None
+        if is_qwen3_tts_test and len(command_args) >= 2:
+            # command_args[1] is the output filename (e.g., "qwen3_tts_out.wav")
+            original_filename = command_args[1]
+            name_part, ext_part = os.path.splitext(original_filename)
+            qwen3_tts_output_filename = f"{name_part}_{stamp_for_name}{ext_part}"
+            command_args[1] = qwen3_tts_output_filename
+
+        # Handle ULT test: no model path
+        is_ult_test = test.get("is_ult", False)
+        is_dflash_test = test.get("is_dflash", False)
+        
+        if is_ult_test:
+            args_list = [str(exe_path), *command_args]
+        elif is_dflash_test:
+            # DFlash requires: exe target_model draft_model [args...]
+            # Replace __DRAFT_MODEL__ placeholder with actual draft model path
+            command_args_resolved = [
+                test["draft_model"] if arg == "__DRAFT_MODEL__" else arg
+                for arg in command_args
+            ]
+            args_list = build_command(str(exe_path), test["model"], command_args_resolved)
+        elif test.get("use_named_model_arg"):
+            args_list = [str(exe_path), "--model", test["model"], *command_args]
+        else:
+            args_list = build_command(str(exe_path), test["model"], command_args)
+        cmd_line = command_to_string(args_list)
+        cd_cmd = f"cd {work_dir}"
+
+        # Build env per test
+        extra_env = test.get("extra_env")
+        env = build_env(path_entries, extra_env)
+        ov_set_cmd = f"set OV_GENAI_USE_MODELING_API={env.get('OV_GENAI_USE_MODELING_API', '1')}"
+
+        print("=" * 80)
+        print(f"Test {test['index']}: {test['name']}")
+        print(f"Command: {cmd_line}")
+        test_start = _dt.datetime.now()
+        result = subprocess.run(
+            args_list,
+            cwd=str(work_dir),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+        output = result.stdout or ""
+
+        # Filter debug logs for ULT tests
+        if is_ult_test:
+            output = filter_ult_output(output)
+
+        perf_block = extract_performance(output)
+        gen_block = extract_generated_text(output)
+
+        # Copy Z-Image output to reports folder
+        zimage_report_path: Optional[Path] = None
+        if is_zimage_test and zimage_output_filename:
+            zimage_src = work_dir / zimage_output_filename
+            if zimage_src.is_file():
+                zimage_report_path = reports_dir / zimage_output_filename
+                shutil.copy2(zimage_src, zimage_report_path)
+                print(f"Z-Image output copied to: {zimage_report_path}")
+
+        # Copy Wan T2V output folder to reports folder
+        wan_t2v_report_folder: Optional[Path] = None
+        wan_t2v_images: List[str] = []
+        if is_wan_t2v_test and wan_t2v_output_folder:
+            wan_t2v_src = work_dir / wan_t2v_output_folder
+            if wan_t2v_src.is_dir():
+                wan_t2v_report_folder = reports_dir / wan_t2v_output_folder
+                if wan_t2v_report_folder.exists():
+                    shutil.rmtree(wan_t2v_report_folder)
+                shutil.copytree(wan_t2v_src, wan_t2v_report_folder)
+                print(f"Wan T2V output folder copied to: {wan_t2v_report_folder}")
+                # Collect all BMP images in the folder
+                wan_t2v_images = sorted(
+                    [f.name for f in wan_t2v_report_folder.iterdir() if f.suffix.lower() == ".bmp"]
+                )
+
+        # Copy Qwen3-TTS output to reports folder
+        qwen3_tts_report_path: Optional[Path] = None
+        if is_qwen3_tts_test and qwen3_tts_output_filename:
+            qwen3_tts_src = work_dir / qwen3_tts_output_filename
+            if qwen3_tts_src.is_file():
+                qwen3_tts_report_path = reports_dir / qwen3_tts_output_filename
+                shutil.copy2(qwen3_tts_src, qwen3_tts_report_path)
+                print(f"Qwen3-TTS output copied to: {qwen3_tts_report_path}")
+
+        test_duration = _dt.datetime.now() - test_start
+        ttft_value = extract_label_value(perf_block, "TTFT")
+        throughput_value = extract_label_value(perf_block, "Throughput")
+        timing_entries.append(
+            {
+                "index": test["index"],
+                "name": test["name"],
+                "duration": test_duration,
+                "ttft": ttft_value,
+                "throughput": throughput_value,
+            }
+        )
+
+        print(f"Return code: {result.returncode}")
+        if result.returncode != 0:
+            failed_tests.append((test["index"], test["name"], result.returncode))
+        if is_ult_test:
+            print("ULT Output:")
+            print(output)
+        else:
+            print("Performance:")
+            print(perf_block)
+            print("Generated text:")
+            print(gen_block)
+
+        if is_ult_test:
+            # Special markdown format for ULT tests
+            report_lines.extend(
+                [
+                    f"## Test {test['index']}: {test['name']}",
+                    "",
+                    "Environment:",
+                    "```text",
+                    path_set_cmd,
+                    cd_cmd,
+                    "```",
+                    "",
+                    "Command:",
+                    "```text",
+                    cmd_line,
+                    "```",
+                    "",
+                    f"Return code: {result.returncode}",
+                    "",
+                    "Test Results:",
+                    "```",
+                    output.strip(),
+                    "```",
+                    "",
+                ]
+            )
+        else:
+            report_lines.extend(
+                [
+                    f"## Test {test['index']}: {test['name']}",
+                    "",
+                    "Environment:",
+                    "```text",
+                    path_set_cmd,
+                    ov_set_cmd,
+                    cd_cmd,
+                    "```",
+                    "",
+                    "Command:",
+                    "```text",
+                    cmd_line,
+                    "```",
+                    "",
+                    f"Return code: {result.returncode}",
+                    "",
+                    "Performance:",
+                    "```text",
+                    perf_block,
+                    "```",
+                    "",
+                    "Generated text:",
+                    "```text",
+                    gen_block,
+                    "```",
+                    "",
+                ]
+            )
+
+        # Embed Z-Image output in report
+        if is_zimage_test and zimage_report_path and zimage_report_path.is_file():
+            report_lines.extend(
+                [
+                    "Generated image:",
+                    "",
+                    f"![{zimage_output_filename}]({zimage_output_filename})",
+                    "",
+                ]
+            )
+
+        # Embed Wan T2V output images in report (5 images per row)
+        if is_wan_t2v_test and wan_t2v_output_folder and wan_t2v_images:
+            report_lines.extend(
+                [
+                    "Generated video frames:",
+                    "",
+                ]
+            )
+            # Create HTML table with 5 images per row
+            images_per_row = 5
+            for i in range(0, len(wan_t2v_images), images_per_row):
+                row_images = wan_t2v_images[i : i + images_per_row]
+                row_cells = " ".join(
+                    f'<img src="{wan_t2v_output_folder}/{img}" alt="{img}">'
+                    for img in row_images
+                )
+                report_lines.append(f"<p>{row_cells}</p>")
+            report_lines.append("")
+
+        # Embed Qwen3-TTS output in report
+        if is_qwen3_tts_test and qwen3_tts_report_path and qwen3_tts_report_path.is_file():
+            report_lines.extend(
+                [
+                    "Generated audio:",
+                    "",
+                    f"[{qwen3_tts_output_filename}]({qwen3_tts_output_filename})",
+                    "",
+                ]
+            )
+
+    total_duration = _dt.datetime.now() - total_start
+    summary_lines: List[str] = ["## Timing Summary", ""]
+    if timing_entries:
+        summary_lines.extend(
+            [
+                "| Test | TTFT | Throughput | Duration |",
+                "| --- | --- | --- | --- |",
+            ]
+        )
+        for entry in timing_entries:
+            summary_lines.append(
+                f"| {entry['index']}: {entry['name']} | {entry['ttft']} | {entry['throughput']} | {format_duration(entry['duration'])} |"
+            )
+    else:
+        summary_lines.append("No tests were executed.")
+    summary_lines.extend(["", f"Total duration: {format_duration(total_duration)}", ""])
+    report_lines.extend(summary_lines)
+
+    report_path.write_text("\n".join(report_lines), encoding="utf-8", newline="\n")
+    print("=" * 80)
+    print(f"Report saved to: {report_path}")
+    print("=" * 80)
+    print("Timing summary:")
+    if timing_entries:
+        print("| Test | TTFT | Throughput | Duration |")
+        print("| --- | --- | --- | --- |")
+        for entry in timing_entries:
+            print(
+                f"| {entry['index']}: {entry['name']} | {entry['ttft']} | {entry['throughput']} | {format_duration(entry['duration'])} |"
+            )
+    else:
+        print("No tests were executed.")
+    print(f"Total run time: {format_duration(total_duration)}")
+
+    if failed_tests:
+        print("", file=sys.stderr)
+        print("FAILED TESTS:", file=sys.stderr)
+        for idx, name, code in failed_tests:
+            print(f"  [{idx}] {name} (exit code: {code})", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
