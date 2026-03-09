@@ -7,50 +7,64 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-PROMPT = "introduce ffmpeg in details"
+DEFAULT_PROMPT = "introduce ffmpeg in details"
+PROMPT_FILE_NAME = "prompt_1k.txt"
 COMMON_ARGS = ["GPU", "1", "1", "100"]
 
-DEFAULT_MODELS_ROOT = r"D:\Data\models"
+DEFAULT_MODELS_ROOT = r"D:\data\models"
+DEFAULT_BUILD_TYPE = "Release"
+FALLBACK_BUILD_TYPE = "RelWithDebInfo"
+SUPPORTED_BUILD_TYPES: Tuple[str, str] = (DEFAULT_BUILD_TYPE, FALLBACK_BUILD_TYPE)
+BUILD_TYPE_TOKEN = "__BUILD_TYPE__"
+OPENVINO_GENAI_REQUIRED_DLLS: Tuple[str, ...] = (
+    "openvino_genai.dll",
+    "openvino_tokenizers.dll",
+)
+OPENVINO_RUNTIME_REQUIRED_DLLS: Tuple[str, ...] = ("openvino.dll",)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-# 与 build.bat 一致：openvino、openvino.genai 在 openvino-explicit-modeling 的上级目录
-SCRIPT_ROOT_DEFAULT = SCRIPT_DIR.parent.parent
+SCRIPT_ROOT_DEFAULT = SCRIPT_DIR.parent
 TEST_IMAGE_PATH = SCRIPT_DIR / "test.jpg"
 TEST_OCR2_IMAGE_PATH = SCRIPT_DIR / "test_ocr2.png"
+PROMPT_FILE_PATH = SCRIPT_DIR / PROMPT_FILE_NAME
+
+
+def load_prompt(prompt_file_path: Path, fallback_prompt: str) -> str:
+    try:
+        content = prompt_file_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return fallback_prompt
+    return content if content else fallback_prompt
+
+
+PROMPT = load_prompt(PROMPT_FILE_PATH, DEFAULT_PROMPT)
 
 TEXT_EXE_REL = (
     Path("openvino.genai")
     / "build"
     / "bin"
-    / "Release"
     / "greedy_causal_lm.exe"
 )
-TEXT_WORK_DIR_REL = Path("openvino") / "bin" / "intel64" / "Release"
-MODELING_SAMPLE_DIR = (
-    Path("openvino.genai")
-    / "build"
-    / "bin"
-    / "Release"
-)
-MODELING_QWEN_EXE_REL = MODELING_SAMPLE_DIR / "modeling_qwen3_vl.exe"
-MODELING_QWEN3_5_EXE_REL = MODELING_SAMPLE_DIR / "modeling_qwen3_5.exe"
-MODELING_DEEPSEEK_OCR2_EXE_REL = MODELING_SAMPLE_DIR / "modeling_deepseek_ocr2.exe"
-MODELING_ZIMAGE_EXE_REL = MODELING_SAMPLE_DIR / "modeling_zimage.exe"
-MODELING_WAN_T2V_EXE_REL = MODELING_SAMPLE_DIR / "modeling_wan_t2v.exe"
-MODELING_DFLASH_EXE_REL = MODELING_SAMPLE_DIR / "modeling_dflash.exe"
-MODELING_QWEN3_TTS_EXE_REL = MODELING_SAMPLE_DIR / "modeling_qwen3_tts.exe"
+TEXT_WORK_DIR_REL = Path("openvino") / "bin" / "intel64" / BUILD_TYPE_TOKEN
+GENAI_BIN_REL = Path("openvino.genai") / "build" / "bin"
+MODELING_QWEN_EXE_REL = GENAI_BIN_REL / "modeling_qwen3_vl.exe"
+MODELING_QWEN3_5_EXE_REL = GENAI_BIN_REL / "modeling_qwen3_5.exe"
+MODELING_DEEPSEEK_OCR2_EXE_REL = GENAI_BIN_REL / "modeling_deepseek_ocr2.exe"
+MODELING_ZIMAGE_EXE_REL = GENAI_BIN_REL / "modeling_zimage.exe"
+MODELING_WAN_T2V_EXE_REL = GENAI_BIN_REL / "modeling_wan_t2v.exe"
+MODELING_DFLASH_EXE_REL = GENAI_BIN_REL / "modeling_dflash.exe"
+MODELING_QWEN3_TTS_EXE_REL = GENAI_BIN_REL / "modeling_qwen3_tts.exe"
 
 MODELING_ULT_EXE_REL = (
     Path("openvino.genai")
     / "build"
     / "bin"
-    / "Release"
     / "test_modeling_api.exe"
 )
 PATH_PREPEND_REL = Path("openvino.genai") / "build" / "openvino_genai"
-TBB_BIN_REL_CANDIDATES: tuple = (
+TBB_BIN_REL_CANDIDATES: Tuple[Path, ...] = (
     Path("openvino") / "temp" / "Windows_AMD64" / "tbb" / "bin",
 )
 
@@ -104,7 +118,7 @@ MODELING_QWEN3_5_TEXT_ARGS = [
     "--mode",
     "text",
     "--prompt",
-    "write opencl gemm kernel and host code: ",
+    PROMPT,
     "--output-tokens",
     "300",
 ]
@@ -176,6 +190,13 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "command_args": TEXT_COMMAND_ARGS.copy() + QUANT_INT4_CHANNEL_WISE_ARGS,
     },
     {
+        "name": "Huggingface Qwen3-8B in-flight quantized (int4_asym, gs128)",
+        "model_rel": Path("Huggingface") / "Qwen3-8B",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": TEXT_COMMAND_ARGS.copy() + QUANT_DEFAULT_ARGS,
+    },
+    {
         "name": "Huggingface SmolLM3-3B",
         "model_rel": Path("Huggingface") / "SmolLM3-3B",
         "exe_rel": TEXT_EXE_REL,
@@ -221,21 +242,21 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Qwen3-VL-2B-Instruct",
         "model_rel": Path("Huggingface") / "Qwen3-VL-2B-Instruct",
         "exe_rel": MODELING_QWEN_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN_ARGS.copy(),
     },
     {
         "name": "Huggingface Qwen3-VL-4B-Instruct",
         "model_rel": Path("Huggingface") / "Qwen3-VL-4B-Instruct",
         "exe_rel": MODELING_QWEN_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN_ARGS.copy(),
     },
     {
         "name": "Huggingface DeepSeek-OCR-2",
         "model_rel": Path("Huggingface") / "DeepSeek-OCR-2",
         "exe_rel": MODELING_DEEPSEEK_OCR2_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_DEEPSEEK_OCR2_ARGS.copy(),
     },
     {
@@ -243,7 +264,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
        "name": "Huggingface Qwen3-VL-8B-all-inflight-quantized (int4_asym, gs128)",
        "model_rel": Path("Huggingface") / "Qwen3-VL-8B-Instruct",
        "exe_rel": MODELING_QWEN_EXE_REL,
-       "work_dir_rel": MODELING_SAMPLE_DIR,
+       "work_dir_rel": TEXT_WORK_DIR_REL,
        # [VISION_QUANT] [VISION_GS] [VISION_BACKUP] [TEXT_QUANT] [TEXT_GS] [TEXT_BACKUP]
        "command_args": MODELING_QWEN_ARGS.copy() + [
            "int4_asym", "-1", "int8_asym",
@@ -254,7 +275,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
        "name": "Huggingface Qwen3-VL-8B-only-text-inflight-quantized (int4_asym, gs128)",
        "model_rel": Path("Huggingface") / "Qwen3-VL-8B-Instruct",
        "exe_rel": MODELING_QWEN_EXE_REL,
-       "work_dir_rel": MODELING_SAMPLE_DIR,
+       "work_dir_rel": TEXT_WORK_DIR_REL,
        # [VISION_QUANT] [VISION_GS] [VISION_BACKUP] [TEXT_QUANT] [TEXT_GS] [TEXT_BACKUP]
        "command_args": MODELING_QWEN_ARGS.copy() + [
            "none", "-1", "none",
@@ -265,14 +286,14 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Z-Image-Turbo",
         "model_rel": Path("Huggingface") / "Z-Image-Turbo",
         "exe_rel": MODELING_ZIMAGE_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_ZIMAGE_ARGS.copy(),
     },
     #{
     #    "name": "Huggingface Z-Image-Turbo (int4_sym, gs128)",
     #    "model_rel": Path("Huggingface") / "Z-Image-Turbo",
     #    "exe_rel": MODELING_ZIMAGE_EXE_REL,
-    #    "work_dir_rel": MODELING_SAMPLE_DIR,
+    #    "work_dir_rel": TEXT_WORK_DIR_REL,
     #    # [DUMP_DIR] [TEXT_QUANT] [TEXT_GS] [TEXT_BACKUP] [DIT_QUANT] [DIT_GS] [DIT_BACKUP] [VAE_QUANT] [VAE_GS] [VAE_BACKUP]
     #    "command_args": MODELING_ZIMAGE_ARGS.copy() + [
     #        "int4_sym", "128", "int8_asym",
@@ -284,7 +305,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Wan2.1-T2V-1.3B-Diffusers",
         "model_rel": Path("Huggingface") / "Wan2.1-T2V-1.3B-Diffusers",
         "exe_rel": MODELING_WAN_T2V_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_WAN_T2V_ARGS.copy(),
     },
     {
@@ -292,7 +313,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "model_rel": Path("Huggingface") / "Qwen3-4B",
         "draft_model_rel": Path("Huggingface") / "Qwen3-4B-DFlash-b16",
         "exe_rel": MODELING_DFLASH_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_DFLASH_ARGS.copy(),
         "is_dflash": True,
     },
@@ -331,14 +352,14 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Qwen3-TTS-12Hz-1.7B-Base",
         "model_rel": Path("Huggingface") / "Qwen3-TTS-12Hz-1.7B-Base",
         "exe_rel": MODELING_QWEN3_TTS_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN3_TTS_ARGS.copy(),
     },
     {
         "name": "Huggingface Qwen3.5-0.8B modeling_qwen3_5 text",
         "model_rel": Path("Huggingface") / "Qwen3.5-0.8B",
         "exe_rel": MODELING_QWEN3_5_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN3_5_TEXT_ARGS.copy(),
         "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
         "use_named_model_arg": True,
@@ -347,7 +368,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Qwen3.5-0.8B modeling_qwen3_5 vl",
         "model_rel": Path("Huggingface") / "Qwen3.5-0.8B",
         "exe_rel": MODELING_QWEN3_5_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN3_5_VL_ARGS.copy(),
         "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
         "use_named_model_arg": True,
@@ -356,7 +377,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Qwen3.5-2B modeling_qwen3_5 text",
         "model_rel": Path("Huggingface") / "Qwen3.5-2B",
         "exe_rel": MODELING_QWEN3_5_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN3_5_TEXT_ARGS.copy(),
         "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
         "use_named_model_arg": True,
@@ -365,7 +386,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Qwen3.5-2B modeling_qwen3_5 vl",
         "model_rel": Path("Huggingface") / "Qwen3.5-2B",
         "exe_rel": MODELING_QWEN3_5_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN3_5_VL_ARGS.copy(),
         "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
         "use_named_model_arg": True,
@@ -374,7 +395,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Qwen3.5-4B modeling_qwen3_5 text",
         "model_rel": Path("Huggingface") / "Qwen3.5-4B",
         "exe_rel": MODELING_QWEN3_5_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN3_5_TEXT_ARGS.copy(),
         "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
         "use_named_model_arg": True,
@@ -383,7 +404,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Qwen3.5-4B modeling_qwen3_5 vl",
         "model_rel": Path("Huggingface") / "Qwen3.5-4B",
         "exe_rel": MODELING_QWEN3_5_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN3_5_VL_ARGS.copy(),
         "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
         "use_named_model_arg": True,
@@ -392,7 +413,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Qwen3.5-9B modeling_qwen3_5 text",
         "model_rel": Path("Huggingface") / "Qwen3.5-9B",
         "exe_rel": MODELING_QWEN3_5_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN3_5_TEXT_ARGS.copy(),
         "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
         "use_named_model_arg": True,
@@ -401,7 +422,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Qwen3.5-9B modeling_qwen3_5 vl",
         "model_rel": Path("Huggingface") / "Qwen3.5-9B",
         "exe_rel": MODELING_QWEN3_5_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN3_5_VL_ARGS.copy(),
         "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
         "use_named_model_arg": True,
@@ -410,7 +431,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Qwen3.5-27B modeling_qwen3_5 text",
         "model_rel": Path("Huggingface") / "Qwen3.5-27B",
         "exe_rel": MODELING_QWEN3_5_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN3_5_TEXT_ARGS.copy(),
         "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
         "use_named_model_arg": True,
@@ -419,7 +440,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Qwen3.5-27B modeling_qwen3_5 vl",
         "model_rel": Path("Huggingface") / "Qwen3.5-27B",
         "exe_rel": MODELING_QWEN3_5_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN3_5_VL_ARGS.copy(),
         "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
         "use_named_model_arg": True,
@@ -428,7 +449,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Qwen3.5-35B-A3B-Base modeling_qwen3_5 text",
         "model_rel": Path("Huggingface") / "Qwen3.5-35B-A3B-Base",
         "exe_rel": MODELING_QWEN3_5_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN3_5_TEXT_ARGS.copy(),
         "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
         "use_named_model_arg": True,
@@ -437,7 +458,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Qwen3.5-35B-A3B-Base modeling_qwen3_5 vl",
         "model_rel": Path("Huggingface") / "Qwen3.5-35B-A3B-Base",
         "exe_rel": MODELING_QWEN3_5_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN3_5_VL_ARGS.copy(),
         "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
         "use_named_model_arg": True,
@@ -446,7 +467,7 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Qwen3.5-35B-A3B modeling_qwen3_5 text",
         "model_rel": Path("Huggingface") / "Qwen3.5-35B-A3B",
         "exe_rel": MODELING_QWEN3_5_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN3_5_TEXT_ARGS.copy(),
         "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
         "use_named_model_arg": True,
@@ -455,19 +476,49 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "name": "Huggingface Qwen3.5-35B-A3B modeling_qwen3_5 vl",
         "model_rel": Path("Huggingface") / "Qwen3.5-35B-A3B",
         "exe_rel": MODELING_QWEN3_5_EXE_REL,
-        "work_dir_rel": MODELING_SAMPLE_DIR,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
         "command_args": MODELING_QWEN3_5_VL_ARGS.copy(),
         "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
         "use_named_model_arg": True,
     },
 ]
 
+def parse_build_type(value: str) -> str:
+    normalized = value.strip().lower()
+    for candidate in SUPPORTED_BUILD_TYPES:
+        if normalized == candidate.lower():
+            return candidate
+    choices = ", ".join(SUPPORTED_BUILD_TYPES)
+    raise argparse.ArgumentTypeError(
+        f"Unsupported build type: {value}. Choose from: {choices}."
+    )
+
+
+def resolve_build_type_path(path_rel: Path, build_type: str) -> Path:
+    return Path(str(path_rel).replace(BUILD_TYPE_TOKEN, build_type))
+
+
+def format_rel_path(path_rel: Path, build_type: Optional[str] = None) -> str:
+    replacement = build_type if build_type is not None else "<build-type>"
+    return str(path_rel).replace(BUILD_TYPE_TOKEN, replacement)
+
+
+def detect_layout_root(root: Path) -> Path:
+    candidates = [root]
+    if root.parent != root:
+        candidates.append(root.parent)
+    for candidate in candidates:
+        if (candidate / "openvino").is_dir() and (candidate / "openvino.genai").is_dir():
+            return candidate
+    return root
+
+
 def find_tbb_bin_dir(root: Path) -> Optional[str]:
-    """查找包含 tbb12.dll 的目录（openvino 构建产物）。"""
     for rel_path in TBB_BIN_REL_CANDIDATES:
         candidate = root / rel_path
         if candidate.is_dir() and (candidate / "tbb12.dll").is_file():
             return str(candidate)
+
     tbb_glob_root = root / "openvino" / "temp"
     if tbb_glob_root.is_dir():
         for candidate in sorted(tbb_glob_root.glob("*/tbb/bin")):
@@ -476,12 +527,10 @@ def find_tbb_bin_dir(root: Path) -> Optional[str]:
     return None
 
 
-def build_path_entries(root: Path) -> List[str]:
+def build_path_entries(root: Path, build_type: str) -> List[str]:
     path_entries = [
         str(root / PATH_PREPEND_REL),
-        str(root / TEXT_WORK_DIR_REL),
-        str(root / Path("openvino.genai") / "build" / "bin" / "Release"),
-        str(root / Path("openvino") / "build" / "bin" / "Release"),
+        str(root / resolve_build_type_path(TEXT_WORK_DIR_REL, build_type)),
     ]
     tbb_bin_dir = find_tbb_bin_dir(root)
     if tbb_bin_dir:
@@ -489,21 +538,93 @@ def build_path_entries(root: Path) -> List[str]:
     return path_entries
 
 
-def build_env(path_entries: List[str], extra_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def collect_missing_build_artifacts(
+    root: Path, tests: List[Dict[str, Any]], build_type: str
+) -> List[str]:
+    missing: List[str] = []
+    reported: Dict[str, None] = {}
+
+    def add_missing(description: str, path: Path) -> None:
+        key = f"{description}|{path}"
+        if key in reported:
+            return
+        reported[key] = None
+        missing.append(f"{description}: {path}")
+
+    openvino_genai_dir = root / PATH_PREPEND_REL
+    if not openvino_genai_dir.is_dir():
+        add_missing("OpenVINO GenAI runtime directory not found", openvino_genai_dir)
+    for dll_name in OPENVINO_GENAI_REQUIRED_DLLS:
+        dll_path = openvino_genai_dir / dll_name
+        if not dll_path.is_file():
+            add_missing("OpenVINO GenAI runtime DLL not found", dll_path)
+
+    openvino_runtime_dir = root / resolve_build_type_path(TEXT_WORK_DIR_REL, build_type)
+    if not openvino_runtime_dir.is_dir():
+        add_missing(
+            f"OpenVINO runtime directory not found for build type {build_type}",
+            openvino_runtime_dir,
+        )
+    for dll_name in OPENVINO_RUNTIME_REQUIRED_DLLS:
+        dll_path = openvino_runtime_dir / dll_name
+        if not dll_path.is_file():
+            add_missing(
+                f"OpenVINO runtime DLL not found for build type {build_type}",
+                dll_path,
+            )
+
+    for test in tests:
+        exe_path = Path(test["exe"])
+        work_dir = Path(test["work_dir"])
+        if not exe_path.is_file():
+            add_missing(
+                f"Test executable not found for build type {build_type}",
+                exe_path,
+            )
+        if not work_dir.is_dir():
+            add_missing(
+                f"Working directory not found for build type {build_type}",
+                work_dir,
+            )
+
+    return missing
+
+
+def format_missing_build_artifacts(build_type: str, missing: List[str]) -> str:
+    lines = [f"Build type '{build_type}' is not runnable. Missing artifacts:"]
+    lines.extend(f"  - {item}" for item in missing)
+    return "\n".join(lines)
+
+
+def build_env(
+    path_entries: List[str], extra_env: Optional[Dict[str, str]] = None
+) -> Tuple[Dict[str, str], Dict[str, str]]:
     env = os.environ.copy()
+    applied_env: Dict[str, str] = {}
     original_path = env.get("PATH", "")
     joined = ";".join(entry for entry in path_entries if entry)
     env["PATH"] = f"{joined};{original_path}" if original_path else joined
+    applied_env["PATH"] = env["PATH"]
+    if extra_env and extra_env.get("PATH"):
+        env["PATH"] = f"{extra_env['PATH']};{env['PATH']}"
+        applied_env["PATH"] = env["PATH"]
     # Set OV_GENAI_USE_MODELING_API from extra_env if present, else from os.environ, else default to "1"
     if extra_env and "OV_GENAI_USE_MODELING_API" in extra_env:
         env["OV_GENAI_USE_MODELING_API"] = extra_env["OV_GENAI_USE_MODELING_API"]
     else:
         env["OV_GENAI_USE_MODELING_API"] = os.environ.get("OV_GENAI_USE_MODELING_API", "1")
+    applied_env["OV_GENAI_USE_MODELING_API"] = env["OV_GENAI_USE_MODELING_API"]
     if extra_env:
         for k, v in extra_env.items():
-            if k != "OV_GENAI_USE_MODELING_API":
-                env[k] = v
-    return env
+            if k in {"PATH", "OV_GENAI_USE_MODELING_API"}:
+                continue
+            env[k] = v
+            applied_env[k] = v
+    return env, applied_env
+
+
+def format_env_commands(applied_env: Dict[str, str]) -> List[str]:
+    return [f"set {key}={value}" for key, value in applied_env.items()]
 
 
 def extract_performance(output: str) -> str:
@@ -624,20 +745,29 @@ def parse_args() -> argparse.Namespace:
             "  python auto_tests.py --root .. --tests 0 1 2\n"
             "  python auto_tests.py --root .. --tests 1~5,7,8~10\n"
             "  python auto_tests.py --root .. --models-root D:\\data\\models\n"
+            "  python auto_tests.py --root .. --build-type RelWithDebInfo\n"
         ),
     )
     parser.add_argument(
         "--root",
         default=str(script_root),
         help=(
-            "Root folder path for openvino-new-arch. "
-            "Defaults to the parent of this script."
+            "Workspace root containing openvino and openvino.genai repos. "
+            "Defaults to the parent of this script and auto-detects sibling-repo layout."
         ),
     )
     parser.add_argument(
         "--models-root",
         default=DEFAULT_MODELS_ROOT,
         help=f"Root folder path for model files (default: {DEFAULT_MODELS_ROOT}).",
+    )
+    parser.add_argument(
+        "--build-type",
+        type=parse_build_type,
+        help=(
+            "Build type to use. Supported values: Release, RelWithDebInfo. "
+            "If omitted, try Release first, then fall back to RelWithDebInfo."
+        ),
     )
     parser.add_argument(
         "--list",
@@ -653,13 +783,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def list_tests(models_root: Path) -> None:
+def list_tests(models_root: Path, build_type: Optional[str] = None) -> None:
     print(f"Models root: {models_root}")
+    if build_type:
+        print(f"Build type: {build_type}")
+    else:
+        print(
+            f"Build type: {DEFAULT_BUILD_TYPE} (fallback to {FALLBACK_BUILD_TYPE} if needed)"
+        )
     print("Available tests:")
     for idx, spec in enumerate(TEST_SPECS):
-        model_info = spec['model_rel'] if spec['model_rel'] else "N/A (ULT)"
+        model_info = spec["model_rel"] if spec["model_rel"] else "N/A (ULT)"
+        exe_info = format_rel_path(spec["exe_rel"], build_type)
         print(
-            f"[{idx}] {spec['name']} -> {model_info} (exe: {spec['exe_rel']})"
+            f"[{idx}] {spec['name']} -> {model_info} (exe: {exe_info})"
         )
 
 
@@ -704,7 +841,7 @@ def parse_test_indices(raw_items: List[str], max_index: int) -> List[int]:
 
 
 def resolve_tests(
-    root: Path, models_root: Path, indices: Optional[List[int]]
+    root: Path, models_root: Path, indices: Optional[List[int]], build_type: str
 ) -> List[Dict[str, Any]]:
     selected = indices if indices is not None else list(range(len(TEST_SPECS)))
     resolved: List[Dict[str, Any]] = []
@@ -724,8 +861,8 @@ def resolve_tests(
         resolved_test = {
             "index": str(idx),
             "name": spec["name"],
-            "exe": str(root / spec["exe_rel"]),
-            "work_dir": str(root / spec["work_dir_rel"]),
+            "exe": str(root / resolve_build_type_path(spec["exe_rel"], build_type)),
+            "work_dir": str(root / resolve_build_type_path(spec["work_dir_rel"], build_type)),
             "model": str(model_path) if model_path else None,
             "command_args": spec["command_args"],
         }
@@ -758,14 +895,15 @@ def main() -> int:
     root = Path(args.root)
     if not root.is_absolute():
         root = (Path.cwd() / root).resolve()
+    workspace_root = detect_layout_root(root)
     models_root = Path(args.models_root)
 
     if args.list:
-        list_tests(models_root)
+        list_tests(models_root, args.build_type)
         return 0
 
-    if not root.exists():
-        print(f"Root folder not found: {root}", file=sys.stderr)
+    if not workspace_root.exists():
+        print(f"Root folder not found: {workspace_root}", file=sys.stderr)
         return 2
 
     if args.tests:
@@ -777,19 +915,68 @@ def main() -> int:
     else:
         indices = None
 
-    tests = resolve_tests(root, models_root, indices)
-    path_entries = build_path_entries(root)
-    path_set_cmd = f"set PATH={';'.join(path_entries)};%PATH%"
+    build_failures: List[Tuple[str, List[str]]] = []
+    candidate_build_types = (
+        [args.build_type] if args.build_type else [DEFAULT_BUILD_TYPE, FALLBACK_BUILD_TYPE]
+    )
+    selected_build_type: Optional[str] = None
+    tests: List[Dict[str, Any]] = []
+
+    for candidate_build_type in candidate_build_types:
+        candidate_tests = resolve_tests(
+            workspace_root, models_root, indices, candidate_build_type
+        )
+        missing_artifacts = collect_missing_build_artifacts(
+            workspace_root, candidate_tests, candidate_build_type
+        )
+        if not missing_artifacts:
+            selected_build_type = candidate_build_type
+            tests = candidate_tests
+            break
+        build_failures.append((candidate_build_type, missing_artifacts))
+
+    if selected_build_type is None:
+        if args.build_type:
+            print(
+                format_missing_build_artifacts(
+                    build_failures[0][0], build_failures[0][1]
+                ),
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "Unable to find a runnable build type. Checked Release, then RelWithDebInfo.",
+                file=sys.stderr,
+            )
+            for failed_build_type, missing_artifacts in build_failures:
+                print("", file=sys.stderr)
+                print(
+                    format_missing_build_artifacts(
+                        failed_build_type, missing_artifacts
+                    ),
+                    file=sys.stderr,
+                )
+        return 2
+
+    if args.build_type is None and selected_build_type != DEFAULT_BUILD_TYPE:
+        print(
+            f"Release artifacts are incomplete. Falling back to {selected_build_type}."
+        )
+    print(f"Using build type: {selected_build_type}")
+
+    path_entries = build_path_entries(workspace_root, selected_build_type)
 
     timestamp = _dt.datetime.now()
     stamp_for_name = timestamp.strftime("%Y%m%d_%H%M%S")
     stamp_for_title = timestamp.strftime("%Y-%m-%d %H:%M:%S")
-    reports_dir = root.parent / "reports"
+    reports_dir = workspace_root / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     report_path = reports_dir / f"test_report_{stamp_for_name}.md"
 
     report_lines: List[str] = [
         f"# Test Report {stamp_for_title}",
+        "",
+        f"Build type: {selected_build_type}",
         "",
     ]
     total_start = _dt.datetime.now()
@@ -861,8 +1048,9 @@ def main() -> int:
 
         # Build env per test
         extra_env = test.get("extra_env")
-        env = build_env(path_entries, extra_env)
-        ov_set_cmd = f"set OV_GENAI_USE_MODELING_API={env.get('OV_GENAI_USE_MODELING_API', '1')}"
+        env, applied_env = build_env(path_entries, extra_env)
+        env_commands = format_env_commands(applied_env)
+        env_commands.append(cd_cmd)
 
         print("=" * 80)
         print(f"Test {test['index']}: {test['name']}")
@@ -955,8 +1143,7 @@ def main() -> int:
                     "",
                     "Environment:",
                     "```text",
-                    path_set_cmd,
-                    cd_cmd,
+                    *env_commands,
                     "```",
                     "",
                     "Command:",
@@ -980,9 +1167,7 @@ def main() -> int:
                     "",
                     "Environment:",
                     "```text",
-                    path_set_cmd,
-                    ov_set_cmd,
-                    cd_cmd,
+                    *env_commands,
                     "```",
                     "",
                     "Command:",
