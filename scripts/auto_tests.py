@@ -122,6 +122,16 @@ MODELING_QWEN3_5_TEXT_ARGS = [
     "--output-tokens",
     "300",
 ]
+QWEN3_5_35B_GREEDY_TEXT_ARGS = [
+    PROMPT,
+    "GPU",
+    "1",
+    "3",
+    "300",
+    "int4_asym",
+    "128",
+    "int4_asym",
+]
 MODELING_QWEN3_5_VL_ARGS = [
     "--cache-model",
     "--mode",
@@ -480,6 +490,16 @@ TEST_SPECS: List[Dict[str, Any]] = [
         "command_args": MODELING_QWEN3_5_VL_ARGS.copy(),
         "extra_env": QWEN3_5_35B_EXTRA_ENV.copy(),
         "use_named_model_arg": True,
+    },
+    {
+        "name": "Huggingface Qwen3.5-35B-A3B greedy_causal_lm text",
+        "model_rel": Path("Huggingface") / "Qwen3.5-35B-A3B",
+        "exe_rel": TEXT_EXE_REL,
+        "work_dir_rel": TEXT_WORK_DIR_REL,
+        "command_args": QWEN3_5_35B_GREEDY_TEXT_ARGS.copy(),
+        "extra_env": {
+            "OV_GENAI_SAVE_OV_MODEL": "1",
+        },
     },
 ]
 
