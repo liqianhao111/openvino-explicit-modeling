@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import locale
 import os
 import re
 import subprocess
@@ -251,6 +252,33 @@ def build_exe_cmd(model_path: str, prompt_file: str, max_tokens: int,
     return cmd
 
 
+def _decode_subprocess_bytes(data: bytes | None) -> str:
+    """Decode subprocess pipe bytes robustly across Windows locales."""
+    if not data:
+        return ""
+
+    encodings = []
+    for enc in ("utf-8", locale.getpreferredencoding(False), "mbcs"):
+        if enc and enc.lower() not in {e.lower() for e in encodings}:
+            encodings.append(enc)
+
+    for enc in encodings:
+        try:
+            return data.decode(enc)
+        except (LookupError, UnicodeDecodeError):
+            continue
+
+    # Preserve as much output as possible instead of crashing the whole run.
+    return data.decode("utf-8", errors="replace")
+
+
+def _collect_subprocess_output(result: subprocess.CompletedProcess[bytes]) -> str:
+    return (
+        _decode_subprocess_bytes(result.stdout) +
+        _decode_subprocess_bytes(result.stderr)
+    )
+
+
 def run_inference(model_path: str, prompt: str, max_tokens: int,
                   sampling: dict, think: int, env: dict) -> str:
     """Run modeling_qwen3_5.exe on a single prompt and return the response text."""
@@ -262,10 +290,10 @@ def run_inference(model_path: str, prompt: str, max_tokens: int,
     try:
         cmd = build_exe_cmd(model_path, prompt_file, max_tokens, sampling, think)
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=600,
+            cmd, capture_output=True, timeout=600,
             env=env, cwd=str(GENAI_BIN),
         )
-        output = result.stdout + result.stderr
+        output = _collect_subprocess_output(result)
     finally:
         os.unlink(prompt_file)
 
@@ -345,6 +373,34 @@ def load_ifeval_dataset() -> list[dict]:
         for line in f:
             dataset.append(json.loads(line))
     return dataset
+
+
+def validate_ifeval_runtime() -> None:
+    """Fail fast on missing Python or NLTK runtime dependencies."""
+    try:
+        import nltk  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "Missing Python dependency `nltk`. Run: "
+            "python -m pip install -r requirements.txt"
+        ) from exc
+
+    missing_resources: list[str] = []
+    for resource_name, resource_path in (
+        ("punkt", "tokenizers/punkt/english.pickle"),
+        ("punkt_tab", "tokenizers/punkt_tab/english/"),
+    ):
+        try:
+            nltk.data.find(resource_path)
+        except LookupError:
+            missing_resources.append(resource_name)
+
+    if missing_resources:
+        resources = " ".join(missing_resources)
+        raise RuntimeError(
+            "Missing NLTK data resources required by the official IFEval checker: "
+            f"{', '.join(missing_resources)}. Run: python -m nltk.downloader {resources}"
+        )
 
 
 def evaluate(dataset: list[dict], prompt_to_response: dict) -> dict:
@@ -811,6 +867,7 @@ def main():
     # Load dataset
     print("Loading IFEval dataset (541 prompts)...")
     dataset = load_ifeval_dataset()
+    validate_ifeval_runtime()
     if args.limit:
         dataset = dataset[:args.limit]
     print(f"  Using {len(dataset)} prompts")
