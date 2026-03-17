@@ -22,10 +22,42 @@ my_workspace/
 
 ## 2. Build 
 
+### Build executable package
 It builds both `openvino` and `openvino.genai`, and creates the `build` directories if needed
 ```bash
 cd openvino-explicit-modeling
 build.bat
+
+# if you want to package all executables together run this command, 
+cd openvino-explicit-modeling\scripts
+python package.py
+# it will generate a package at "openvino-explicit-modeling\..\package\Release"
+```
+
+### Build python wheel package (optional)
+
+```bash
+cd openvino-explicit-modeling
+build.bat --wheel
+```
+
+`build.bat --wheel` builds `openvino`, builds `openvino.genai`, and writes all wheel files plus `wheel.py` into the `wheel` folder under the directory two levels above `build.bat`.
+
+Use the existing `.venv` to install and run the wheel package:
+
+```bash
+cd my_workspace
+.venv\Scripts\activate
+pip install --no-index --find-links wheel openvino_genai
+python wheel\wheel.py --help
+```
+
+Before running `wheel.py`, first run one of the exe samples below (see ## 3. Run Tests) with `--cache-model` so the cached OpenVINO IR files are generated.
+
+Then run the wheel smoke test with the cached xml file:
+
+```bash
+python wheel\wheel.py --model D:\data\models\Huggingface\Qwen3.5-35B-A3B\qwen3_5_text_q4a_b4a_g128.xml --prompt "what's ffmpeg?" --device GPU --max-new-tokens 300
 ```
 
 ## 3. Run Tests
@@ -47,32 +79,6 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install openvino-tokenizers
 pip install transformers
-```
-
-### Build wheel package
-
-```bash
-cd openvino-explicit-modeling
-build.bat --wheel
-```
-
-`build.bat --wheel` builds `openvino`, builds `openvino.genai`, and writes all wheel files plus `wheel.py` into the `wheel` folder under the directory two levels above `build.bat`.
-
-Use the existing `.venv` to install and run the wheel package:
-
-```bash
-cd my_workspace
-.venv\Scripts\activate
-pip install --no-index --find-links wheel openvino_genai
-python wheel\wheel.py --help
-```
-
-Before running `wheel.py`, first run one of the exe samples below with `--cache-model` so the cached OpenVINO IR files are generated.
-
-Then run the wheel smoke test with the cached xml file:
-
-```bash
-python wheel\wheel.py --model D:\data\models\Huggingface\Qwen3.5-35B-A3B\qwen3_5_text_q4a_b4a_g128.xml --prompt "what's ffmpeg?" --device GPU --max-new-tokens 300
 ```
 
 ### Option #1: Use auto_tests.py
@@ -142,3 +148,11 @@ cd openvino-explicit-modeling
 run.bat
 greedy_causal_lm.exe D:\data\models\Huggingface\Qwen3.5-35B-A3B "write opencl gemm kernel and host code" GPU 1 3 300 int4_asym 128 int4_asym
 ```
+
+---
+
+## 4. LLM Accuracy Benchmarks
+
+Three benchmark scripts (`ifeval.py`, `ceval.py`, `mmlu_redux.py`) evaluate model
+accuracy. See **[scripts/README.md](scripts/README.md)** for full documentation:
+setup, CLI reference, usage examples, output structure, and expected run times.
