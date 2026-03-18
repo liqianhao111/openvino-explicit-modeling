@@ -268,7 +268,7 @@ Sampling arguments:
 | `--temperature` | `1.0` | `0` = greedy argmax |
 | `--top-p` | `0.95` | Nucleus sampling |
 | `--top-k` | `20` | Top-K filtering |
-| `--presence-penalty` | `1.5` | Encourages new tokens |
+| `--presence-penalty` | `1.5` (IFEval), `0.0` (MCQ) | Encourages new tokens |
 | `--repetition-penalty` | `1.0` | Multiplicative repeat penalty |
 | `--frequency-penalty` | `0.0` | Additive frequency penalty |
 | `--rng-seed` | `0` | `0` = random |
@@ -277,7 +277,7 @@ Control arguments:
 
 | Argument | Default | Description |
 |----------|:-------:|-------------|
-| `--max-tokens` | `2048` in IFEval, `32` in MCQ benchmarks | Max output tokens per question |
+| `--max-tokens` | `2048` in IFEval, `512` in MCQ benchmarks | Max output tokens per question |
 | `--limit N` | all questions | Run only the first `N` questions |
 | `--resume <path>` | none | Resume from `answers.jsonl` or `responses.jsonl` |
 | `--output-dir <path>` | auto | Custom output directory for a single run |
@@ -395,4 +395,4 @@ Approximate times on Intel Arc A770 with quantization preset `--quant-list 1`:
 | MMLU-Redux | ~4,472 | ~60 min | ~140 min | ~220 min |
 
 C-Eval and MMLU-Redux are faster per question because MCQ output is short
-(`--max-tokens 32`) while IFEval generates full text (`--max-tokens 2048`).
+(`--max-tokens 512`) while IFEval generates full text (`--max-tokens 2048`).

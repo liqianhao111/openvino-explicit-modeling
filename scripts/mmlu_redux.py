@@ -475,15 +475,50 @@ def build_mmlu_prompt(question_row: dict, dev_rows: List[dict],
 # Answer parsing
 # ---------------------------------------------------------------------------
 def parse_mcq_answer(response: str) -> str:
-    """Extract the first A/B/C/D letter from the model response."""
+    """Extract the answer letter (A/B/C/D) from the model response.
+
+    The model typically generates an explanation first, then states the answer
+    at the end (e.g., "Answer: B" or "答案：D").  We search for explicit
+    answer patterns from the END of the response first, then fall back to
+    simpler heuristics.
+
+    Returns the letter (uppercase) or empty string if no valid letter found.
+    """
     if not response:
         return ""
-    match = re.search(r'\b([A-D])\b', response)
-    if match:
-        return match.group(1)
-    for ch in response:
+
+    # Strategy 1: Look for explicit answer patterns (highest confidence).
+    # Use the LAST match — the model often discusses options A/B/C/D in its
+    # explanation before stating the final answer at the end.
+    answer_patterns = [
+        r'(?:answer|Answer)\s*(?:is|:)\s*\**([A-D])\**',  # Answer: D / answer is B
+        r'(?:the answer|The answer)\s+is\s+\**([A-D])\**', # The answer is C
+        r'答案[是为]?[：:]\s*\**([A-D])\**',        # 答案：D / 答案是：**D**
+        r'正确答案[是为]\s*\**([A-D])\**',           # 正确答案是C
+        r'答案[是为]\s*\**([A-D])\**',              # 答案是D / 答案为D
+        r'(?:应选|应该选|选)\s*\**([A-D])\**',        # 应选D
+        r'故选\s*\**([A-D])\**',                    # 故选D
+    ]
+    for pattern in answer_patterns:
+        matches = list(re.finditer(pattern, response))
+        if matches:
+            return matches[-1].group(1)
+
+    # Strategy 2: Response starts with just a letter (model directly answered)
+    first = response.strip()
+    if first and first[0] in "ABCD" and (len(first) == 1 or first[1] in ' \t\n\r.。,，\r'):
+        return first[0]
+
+    # Strategy 3: Last standalone A-D letter in the response
+    matches = list(re.finditer(r'\b([A-D])\b', response))
+    if matches:
+        return matches[-1].group(1)
+
+    # Strategy 4: Last A-D character anywhere
+    for ch in reversed(response):
         if ch in "ABCD":
             return ch
+
     return ""
 
 
@@ -1010,15 +1045,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="Repetition penalty (default: 1.0).")
     parser.add_argument("--frequency-penalty", type=float, default=0.0,
                         help="Frequency penalty (default: 0.0).")
-    parser.add_argument("--presence-penalty", type=float, default=1.5,
-                        help="Presence penalty (default: 1.5).")
+    parser.add_argument("--presence-penalty", type=float, default=0.0,
+                        help="Presence penalty (default: 0.0). "
+                             "Keep at 0 for MCQ to avoid encouraging verbose output.")
     parser.add_argument("--rng-seed", type=int, default=0,
                         help="Random seed (default: 0 = random).")
 
     # --- MMLU-Redux specific ---
     parser.add_argument(
-        "--max-tokens", type=int, default=32,
-        help="Maximum output tokens per question (default: 32).")
+        "--max-tokens", type=int, default=512,
+        help="Maximum output tokens per question (default: 512). "
+             "The model generates an explanation before stating the answer letter; "
+             "512 tokens is enough for the explanation + final answer.")
     parser.add_argument(
         "--n-shot", type=int, default=5,
         help="Number of few-shot examples from MMLU dev set (default: 5). "
