@@ -17,6 +17,7 @@ Install the following on Windows:
 git 2.x
 cmake 3.x
 Visual Studio 2022
+uv 0.10+ (required for wheel builds and managed Python provisioning)
 python 3.10+
 ```
 
@@ -172,13 +173,22 @@ Build wheels for `openvino`, `openvino_tokenizers`, and `openvino.genai`:
 
 ```bat
 cd my_workspace\openvino-explicit-modeling
-build.bat --wheel
+build.bat --wheel --python=3.11.9
 ```
 
-The wheel files and `wheel.py` are written to:
+If `--python` is omitted, `build.bat --wheel` uses the first `python.exe` found
+in `PATH`.
+
+Wheel build virtual environments are reused by exact Python version under:
 
 ```text
-my_workspace\wheel\
+my_workspace\openvino-explicit-modeling\.wheel-build-venv\<python-version>\
+```
+
+The wheel files and `wheel.py` are written to versioned output folders such as:
+
+```text
+my_workspace\wheel\cp311\
 ```
 
 Install from the local wheel directory:
@@ -186,8 +196,8 @@ Install from the local wheel directory:
 ```bat
 cd my_workspace
 .venv\Scripts\activate
-pip install --no-index --find-links wheel openvino_genai
-python wheel\wheel.py --help
+pip install --no-index --find-links wheel\cp311 openvino_genai
+python wheel\cp311\wheel.py --help
 ```
 
 Before running `wheel.py`, first generate cached OpenVINO IR files by running
@@ -196,7 +206,7 @@ one of the executable samples with `--cache-model`.
 Example:
 
 ```bat
-python wheel\wheel.py --model D:\data\models\Huggingface\Qwen3.5-35B-A3B\qwen3_5_text_q4a_b4a_g128.xml --prompt "what's ffmpeg?" --device GPU --max-new-tokens 300
+python wheel\cp311\wheel.py --model D:\data\models\Huggingface\Qwen3.5-35B-A3B\qwen3_5_text_q4a_b4a_g128.xml --prompt "what's ffmpeg?" --device GPU --max-new-tokens 300
 ```
 
 ## 8. LLM Accuracy Benchmarks

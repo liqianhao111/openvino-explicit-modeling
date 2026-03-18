@@ -11,21 +11,61 @@ set "OPENVINO_SRC=%ROOT%\openvino"
 set "OPENVINO_BUILD=%OPENVINO_SRC%\build"
 set "GENAI_SRC=%ROOT%\openvino.genai"
 set "GENAI_BUILD=%GENAI_SRC%\build"
-set "WHEEL_OUTPUT_DIR=%ROOT%\wheel"
-set "WHEEL_VENV_DIR=%SCRIPT_DIR%\.wheel-build-venv"
+set "WHEEL_OUTPUT_ROOT=%ROOT%\wheel"
+set "WHEEL_VENV_ROOT=%SCRIPT_DIR%\.wheel-build-venv"
 set "WHEEL_SCRIPT=%SCRIPT_DIR%\scripts\wheel.py"
+set "TOKENIZERS_WHEEL_SCRIPT=%SCRIPT_DIR%\scripts\build_openvino_tokenizers_wheel.py"
+set "WHEEL_OUTPUT_DIR="
+set "WHEEL_VENV_DIR="
+set "WHEEL_PYTHON="
+set "WHEEL_PYTHON_SOURCE="
+set "WHEEL_PYTHON_REQUEST="
+set "WHEEL_PYTHON_VERSION="
+set "WHEEL_TAG="
 
 set "BUILD_OPENVINO=1"
 set "BUILD_GENAI=1"
 set "BUILD_WHEEL=0"
 set "INVALID_ARG="
+set "ARG_ERROR="
 set "SHOW_USAGE=0"
+set "RAW_ARGS=%*"
 
-if not "%~1"=="" (
-    call :parse_args %*
-    if errorlevel 1 exit /b 1
+if defined RAW_ARGS (
+    goto :parse_args
+)
+goto :after_parse
+
+:parse_args
+if not defined RAW_ARGS goto :after_parse
+
+set "ARG="
+for /f "tokens=1* delims= " %%A in ("%RAW_ARGS%") do (
+    set "ARG=%%A"
+    set "RAW_ARGS=%%B"
 )
 
+if not defined ARG goto :after_parse
+if /i "!ARG!"=="--wheel" (
+    set "BUILD_WHEEL=1"
+) else if /i "!ARG!"=="--python" (
+    if not defined ARG_ERROR set "ARG_ERROR=Use --python=<version>."
+) else if /i "!ARG:~0,9!"=="--python=" (
+    set "WHEEL_PYTHON_REQUEST=!ARG:~9!"
+    if "!WHEEL_PYTHON_REQUEST!"=="" if not defined ARG_ERROR set "ARG_ERROR=Missing value for --python."
+) else if /i "!ARG!"=="--help" (
+    set "SHOW_USAGE=1"
+) else if /i "!ARG!"=="-h" (
+    set "SHOW_USAGE=1"
+) else if /i "!ARG!"=="/?" (
+    set "SHOW_USAGE=1"
+) else (
+    if not defined INVALID_ARG if not defined ARG_ERROR set "INVALID_ARG=!ARG!"
+)
+
+goto :parse_args
+
+:after_parse
 if "%SHOW_USAGE%"=="1" (
     call :usage
     exit /b 0
@@ -33,6 +73,18 @@ if "%SHOW_USAGE%"=="1" (
 
 if defined INVALID_ARG (
     echo [ERROR] Invalid argument: %INVALID_ARG%
+    call :usage
+    exit /b 1
+)
+
+if defined ARG_ERROR (
+    echo [ERROR] %ARG_ERROR%
+    call :usage
+    exit /b 1
+)
+
+if defined WHEEL_PYTHON_REQUEST if not "%BUILD_WHEEL%"=="1" (
+    echo [ERROR] --python can only be used together with --wheel.
     call :usage
     exit /b 1
 )
@@ -78,6 +130,14 @@ if "%BUILD_WHEEL%"=="1" (
     call :ensure_wheel_python
     if errorlevel 1 exit /b 1
     set "OPENVINO_CMAKE_ARGS=!OPENVINO_CMAKE_ARGS! -DENABLE_PYTHON=ON -DENABLE_WHEEL=ON -DPython3_EXECUTABLE=!WHEEL_PYTHON!"
+ ) else (
+    rem Clear wheel-only cache entries so a previous --wheel configure cannot break a normal build.
+    set "OPENVINO_CMAKE_ARGS=!OPENVINO_CMAKE_ARGS! -DENABLE_PYTHON=OFF -DENABLE_WHEEL=OFF"
+    set "OPENVINO_CMAKE_ARGS=!OPENVINO_CMAKE_ARGS! -UPython3_EXECUTABLE -UPython3_ROOT_DIR -UPython3_INCLUDE_DIR"
+    set "OPENVINO_CMAKE_ARGS=!OPENVINO_CMAKE_ARGS! -UPython3_LIBRARY -UPython3_LIBRARY_RELEASE -UPython3_LIBRARY_DEBUG"
+    set "OPENVINO_CMAKE_ARGS=!OPENVINO_CMAKE_ARGS! -U_Python3_EXECUTABLE -U_Python3_INCLUDE_DIR"
+    set "OPENVINO_CMAKE_ARGS=!OPENVINO_CMAKE_ARGS! -U_Python3_LIBRARY_RELEASE -U_Python3_LIBRARY_DEBUG"
+    set "OPENVINO_CMAKE_ARGS=!OPENVINO_CMAKE_ARGS! -UPYBIND11_PYTHON_EXECUTABLE_LAST -UFIND_PACKAGE_MESSAGE_DETAILS_Python3"
 )
 
 echo [CONFIGURE] openvino
@@ -98,7 +158,27 @@ if not exist "%OPENVINO_BUILD%\OpenVINOConfig.cmake" (
 )
 
 echo [BUILD] openvino.genai
-cmake -S "%GENAI_SRC%" -B "%GENAI_BUILD%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DOpenVINO_DIR="%OPENVINO_BUILD%"
+set "GENAI_CMAKE_ARGS=-DCMAKE_BUILD_TYPE=Release -DOpenVINO_DIR=%OPENVINO_BUILD%"
+if "%BUILD_WHEEL%"=="1" (
+    call :ensure_wheel_python
+    if errorlevel 1 exit /b 1
+    rem Clear stale Python cache entries before switching wheel Python versions or layouts.
+    set "GENAI_CMAKE_ARGS=!GENAI_CMAKE_ARGS! -DENABLE_PYTHON=ON -UPython3_EXECUTABLE -UPython3_ROOT_DIR -UPython3_INCLUDE_DIR"
+    set "GENAI_CMAKE_ARGS=!GENAI_CMAKE_ARGS! -UPython3_LIBRARY -UPython3_LIBRARY_RELEASE -UPython3_LIBRARY_DEBUG"
+    set "GENAI_CMAKE_ARGS=!GENAI_CMAKE_ARGS! -U_Python3_EXECUTABLE -U_Python3_INCLUDE_DIR"
+    set "GENAI_CMAKE_ARGS=!GENAI_CMAKE_ARGS! -U_Python3_LIBRARY_RELEASE -U_Python3_LIBRARY_DEBUG"
+    set "GENAI_CMAKE_ARGS=!GENAI_CMAKE_ARGS! -UPYBIND11_PYTHON_EXECUTABLE_LAST -UFIND_PACKAGE_MESSAGE_DETAILS_Python3"
+    set "GENAI_CMAKE_ARGS=!GENAI_CMAKE_ARGS! -DPython3_EXECUTABLE=!WHEEL_PYTHON!"
+) else (
+    rem Keep the default build independent from Python and any wheel-only cache state.
+    set "GENAI_CMAKE_ARGS=!GENAI_CMAKE_ARGS! -DENABLE_PYTHON=OFF -UPython3_EXECUTABLE -UPython3_ROOT_DIR -UPython3_INCLUDE_DIR"
+    set "GENAI_CMAKE_ARGS=!GENAI_CMAKE_ARGS! -UPython3_LIBRARY -UPython3_LIBRARY_RELEASE -UPython3_LIBRARY_DEBUG"
+    set "GENAI_CMAKE_ARGS=!GENAI_CMAKE_ARGS! -U_Python3_EXECUTABLE -U_Python3_INCLUDE_DIR"
+    set "GENAI_CMAKE_ARGS=!GENAI_CMAKE_ARGS! -U_Python3_LIBRARY_RELEASE -U_Python3_LIBRARY_DEBUG"
+    set "GENAI_CMAKE_ARGS=!GENAI_CMAKE_ARGS! -UPYBIND11_PYTHON_EXECUTABLE_LAST -UFIND_PACKAGE_MESSAGE_DETAILS_Python3"
+)
+
+cmake -S "%GENAI_SRC%" -B "%GENAI_BUILD%" -G Ninja !GENAI_CMAKE_ARGS!
 if errorlevel 1 (
     echo [ERROR] CMake configure failed for openvino.genai.
     echo         Make sure openvino build directory exists and is valid.
@@ -129,21 +209,23 @@ if errorlevel 1 (
     exit /b 1
 )
 
-copy /y "%OPENVINO_BUILD%\wheels\*.whl" "%WHEEL_OUTPUT_DIR%\" >nul
-if errorlevel 1 (
-    echo [ERROR] Failed to copy openvino wheel into %WHEEL_OUTPUT_DIR%.
+call :copy_latest_openvino_wheel
+if errorlevel 1 exit /b 1
+
+set "OPENVINO_BUILD_DIR_FWD=%OPENVINO_BUILD%"
+set "OPENVINO_BUILD_DIR_FWD=!OPENVINO_BUILD_DIR_FWD:\=/!"
+
+echo [BUILD] openvino_tokenizers wheel
+if not exist "%TOKENIZERS_WHEEL_SCRIPT%" (
+    echo [ERROR] build_openvino_tokenizers_wheel.py not found: %TOKENIZERS_WHEEL_SCRIPT%
     exit /b 1
 )
 
-echo [BUILD] openvino_tokenizers wheel
-"%WHEEL_PYTHON%" -m pip wheel "%GENAI_SRC%\thirdparty\openvino_tokenizers" --wheel-dir "%WHEEL_OUTPUT_DIR%" --find-links "%WHEEL_OUTPUT_DIR%" --no-deps -v
+"%WHEEL_PYTHON%" "%TOKENIZERS_WHEEL_SCRIPT%" --source-dir "%GENAI_SRC%\thirdparty\openvino_tokenizers" --build-dir "%GENAI_BUILD%" --wheel-dir "%WHEEL_OUTPUT_DIR%"
 if errorlevel 1 (
     echo [ERROR] Failed to build the openvino_tokenizers wheel.
     exit /b 1
 )
-
-set "OPENVINO_BUILD_DIR_FWD=%OPENVINO_BUILD%"
-set "OPENVINO_BUILD_DIR_FWD=!OPENVINO_BUILD_DIR_FWD:\=/!"
 
 echo [BUILD] openvino.genai wheel
 "%WHEEL_PYTHON%" -m pip wheel "%GENAI_SRC%" --wheel-dir "%WHEEL_OUTPUT_DIR%" --find-links "%WHEEL_OUTPUT_DIR%" --no-deps --config-settings=--override=cmake.options.OpenVINO_DIR=!OPENVINO_BUILD_DIR_FWD! -v
@@ -186,6 +268,12 @@ if defined GENAI_WHEEL (
 exit /b 0
 
 :prepare_wheel_output
+if not exist "%WHEEL_OUTPUT_ROOT%" mkdir "%WHEEL_OUTPUT_ROOT%"
+if errorlevel 1 (
+    echo [ERROR] Failed to create wheel output root: %WHEEL_OUTPUT_ROOT%
+    exit /b 1
+)
+
 if not exist "%WHEEL_OUTPUT_DIR%" mkdir "%WHEEL_OUTPUT_DIR%"
 if errorlevel 1 (
     echo [ERROR] Failed to create wheel output directory: %WHEEL_OUTPUT_DIR%
@@ -197,21 +285,89 @@ del /q "%WHEEL_OUTPUT_DIR%\openvino_genai-*.whl" 2>nul
 del /q "%WHEEL_OUTPUT_DIR%\openvino_tokenizers-*.whl" 2>nul
 del /q "%WHEEL_OUTPUT_DIR%\numpy-*.whl" 2>nul
 del /q "%WHEEL_OUTPUT_DIR%\openvino_telemetry-*.whl" 2>nul
+del /q "%WHEEL_OUTPUT_DIR%\wheel.py" 2>nul
 exit /b 0
 
 :ensure_wheel_python
 if defined WHEEL_ENV_READY exit /b 0
 
-call :ensure_host_python
+call :resolve_wheel_context
 if errorlevel 1 exit /b 1
 
 set "WHEEL_PYTHON=%WHEEL_VENV_DIR%\Scripts\python.exe"
+set "WHEEL_VENV_INFO_FILE=%WHEEL_VENV_DIR%\.wheel-env-info.txt"
 
-if not exist "%WHEEL_PYTHON%" (
-    echo [SETUP] Creating wheel build venv: %WHEEL_VENV_DIR%
-    "%HOST_PYTHON%" -m venv "%WHEEL_VENV_DIR%"
+if not defined WHEEL_VENV_ROOT_READY (
+    if exist "%WHEEL_VENV_ROOT%\pyvenv.cfg" (
+        echo [SETUP] Removing legacy single-version wheel venv layout: %WHEEL_VENV_ROOT%
+        rmdir /s /q "%WHEEL_VENV_ROOT%"
+        if errorlevel 1 (
+            echo [ERROR] Failed to remove the legacy wheel build venv directory.
+            exit /b 1
+        )
+    )
+
+    if not exist "%WHEEL_VENV_ROOT%" mkdir "%WHEEL_VENV_ROOT%"
     if errorlevel 1 (
-        echo [ERROR] Failed to create the wheel build venv.
+        echo [ERROR] Failed to create wheel venv root: %WHEEL_VENV_ROOT%
+        exit /b 1
+    )
+
+    set "WHEEL_VENV_ROOT_READY=1"
+)
+
+set "CREATE_WHEEL_VENV=0"
+if exist "%WHEEL_PYTHON%" (
+    set "CURRENT_WHEEL_VENV_VERSION="
+    set "CURRENT_WHEEL_VENV_SOURCE="
+    if not exist "%WHEEL_VENV_INFO_FILE%" (
+        echo [SETUP] Existing wheel build venv is missing metadata and will be recreated: %WHEEL_VENV_DIR%
+        set "CREATE_WHEEL_VENV=1"
+    ) else (
+        for /f "usebackq tokens=1* delims=|" %%I in ("%WHEEL_VENV_INFO_FILE%") do (
+            if not defined CURRENT_WHEEL_VENV_VERSION set "CURRENT_WHEEL_VENV_VERSION=%%I"
+            if not defined CURRENT_WHEEL_VENV_SOURCE set "CURRENT_WHEEL_VENV_SOURCE=%%J"
+        )
+
+        if not defined CURRENT_WHEEL_VENV_VERSION (
+            echo [SETUP] Existing wheel build venv metadata is invalid and will be recreated: %WHEEL_VENV_DIR%
+            set "CREATE_WHEEL_VENV=1"
+        ) else if /i not "!CURRENT_WHEEL_VENV_VERSION!"=="%WHEEL_PYTHON_VERSION%" (
+            echo [SETUP] Existing wheel build venv uses Python !CURRENT_WHEEL_VENV_VERSION! and will be recreated for %WHEEL_PYTHON_VERSION%.
+            set "CREATE_WHEEL_VENV=1"
+        ) else if not defined CURRENT_WHEEL_VENV_SOURCE (
+            echo [SETUP] Existing wheel build venv metadata is incomplete and will be recreated: %WHEEL_VENV_DIR%
+            set "CREATE_WHEEL_VENV=1"
+        ) else if /i not "!CURRENT_WHEEL_VENV_SOURCE!"=="%WHEEL_PYTHON_SOURCE%" (
+            echo [SETUP] Existing wheel build venv uses !CURRENT_WHEEL_VENV_SOURCE! and will be recreated for %WHEEL_PYTHON_SOURCE%.
+            set "CREATE_WHEEL_VENV=1"
+        ) else (
+            echo [SETUP] Reusing wheel build venv: %WHEEL_VENV_DIR%
+        )
+    )
+) else (
+    set "CREATE_WHEEL_VENV=1"
+)
+
+if "%CREATE_WHEEL_VENV%"=="1" (
+    if exist "%WHEEL_VENV_DIR%" (
+        rmdir /s /q "%WHEEL_VENV_DIR%"
+        if errorlevel 1 (
+            echo [ERROR] Failed to remove wheel build venv: %WHEEL_VENV_DIR%
+            exit /b 1
+        )
+    )
+
+    echo [SETUP] Creating wheel build venv for Python %WHEEL_PYTHON_VERSION%: %WHEEL_VENV_DIR%
+    uv venv --seed --python "%WHEEL_PYTHON_SOURCE%" "%WHEEL_VENV_DIR%"
+    if errorlevel 1 (
+        echo [ERROR] Failed to create the wheel build venv with uv.
+        exit /b 1
+    )
+
+    >"%WHEEL_VENV_INFO_FILE%" echo %WHEEL_PYTHON_VERSION%^|%WHEEL_PYTHON_SOURCE%
+    if errorlevel 1 (
+        echo [ERROR] Failed to record wheel build venv interpreter metadata.
         exit /b 1
     )
 )
@@ -232,24 +388,83 @@ if errorlevel 1 (
 set "WHEEL_ENV_READY=1"
 exit /b 0
 
-:parse_args
-if "%~1"=="" exit /b 0
+:resolve_wheel_context
+if defined WHEEL_CONTEXT_READY exit /b 0
 
-set "ARG=%~1"
-if /i "%ARG%"=="--wheel" (
-    set "BUILD_WHEEL=1"
-) else if /i "%ARG%"=="--help" (
-    set "SHOW_USAGE=1"
-) else if /i "%ARG%"=="-h" (
-    set "SHOW_USAGE=1"
-) else if /i "%ARG%"=="/?" (
-    set "SHOW_USAGE=1"
+call :ensure_uv
+if errorlevel 1 exit /b 1
+
+if defined WHEEL_PYTHON_REQUEST (
+    echo [SETUP] Ensuring Python %WHEEL_PYTHON_REQUEST% is available via uv
+    uv python install "%WHEEL_PYTHON_REQUEST%"
+    if errorlevel 1 (
+        echo [ERROR] Failed to install or locate Python %WHEEL_PYTHON_REQUEST% with uv.
+        exit /b 1
+    )
+
+    for /f "usebackq delims=" %%I in (`uv python find --show-version "%WHEEL_PYTHON_REQUEST%" 2^>nul`) do (
+        if not defined WHEEL_PYTHON_VERSION set "WHEEL_PYTHON_VERSION=%%I"
+    )
+    for /f "tokens=1* delims= " %%I in ('uv python list --managed-python --only-installed "%WHEEL_PYTHON_REQUEST%" 2^>nul') do (
+        if not defined WHEEL_PYTHON_SOURCE set "WHEEL_PYTHON_SOURCE=%%J"
+    )
+
+    if not defined WHEEL_PYTHON_SOURCE (
+        echo [ERROR] uv could not resolve a managed Python interpreter for %WHEEL_PYTHON_REQUEST%.
+        exit /b 1
+    )
+    if not defined WHEEL_PYTHON_VERSION (
+        echo [ERROR] uv could not resolve the exact Python version for %WHEEL_PYTHON_REQUEST%.
+        exit /b 1
+    )
 ) else (
-    set "INVALID_ARG=%ARG%"
+    call :ensure_host_python
+    if errorlevel 1 exit /b 1
+
+    set "WHEEL_PYTHON_SOURCE=%HOST_PYTHON%"
+    call :get_python_version "%HOST_PYTHON%" WHEEL_PYTHON_VERSION
+    if not defined WHEEL_PYTHON_VERSION (
+        echo [ERROR] Failed to detect the default python version from PATH: %HOST_PYTHON%
+        exit /b 1
+    )
 )
 
-shift
-goto :parse_args
+call :make_wheel_tag "%WHEEL_PYTHON_VERSION%" WHEEL_TAG
+if not defined WHEEL_TAG (
+    echo [ERROR] Failed to derive the wheel tag from Python %WHEEL_PYTHON_VERSION%.
+    exit /b 1
+)
+
+set "WHEEL_VENV_DIR=%WHEEL_VENV_ROOT%\%WHEEL_PYTHON_VERSION%"
+set "WHEEL_OUTPUT_DIR=%WHEEL_OUTPUT_ROOT%\%WHEEL_TAG%"
+
+echo [INFO] Wheel build Python: %WHEEL_PYTHON_VERSION% (%WHEEL_TAG%)
+if defined WHEEL_PYTHON_REQUEST (
+    echo [INFO] Resolved from --python=%WHEEL_PYTHON_REQUEST%
+) else (
+    echo [INFO] Using default python from PATH: %WHEEL_PYTHON_SOURCE%
+)
+
+set "WHEEL_CONTEXT_READY=1"
+exit /b 0
+
+:copy_latest_openvino_wheel
+set "OPENVINO_WHEEL="
+for /f "delims=" %%I in ('dir /b /a-d /o-d "%OPENVINO_BUILD%\wheels\openvino-*-%WHEEL_TAG%-%WHEEL_TAG%-*.whl" 2^>nul') do (
+    if not defined OPENVINO_WHEEL set "OPENVINO_WHEEL=%%I"
+)
+
+if not defined OPENVINO_WHEEL (
+    echo [ERROR] Failed to locate the newly built openvino wheel for %WHEEL_TAG% in %OPENVINO_BUILD%\wheels.
+    exit /b 1
+)
+
+copy /y "%OPENVINO_BUILD%\wheels\%OPENVINO_WHEEL%" "%WHEEL_OUTPUT_DIR%\" >nul
+if errorlevel 1 (
+    echo [ERROR] Failed to copy %OPENVINO_WHEEL% into %WHEEL_OUTPUT_DIR%.
+    exit /b 1
+)
+exit /b 0
 
 :ensure_host_python
 if defined HOST_PYTHON exit /b 0
@@ -262,6 +477,33 @@ if not defined HOST_PYTHON (
     echo [ERROR] python.exe not found in PATH.
     echo         Install Python 3.10+ and make sure it is available in PATH.
     exit /b 1
+)
+exit /b 0
+
+:ensure_uv
+if defined UV_READY exit /b 0
+
+where uv >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] uv.exe not found in PATH.
+    echo         Install uv and make sure it is available in PATH before running build.bat --wheel.
+    exit /b 1
+)
+
+set "UV_READY=1"
+exit /b 0
+
+:get_python_version
+set "%~2="
+for /f "usebackq delims=" %%I in (`"%~1" -c "import sys; print('.'.join(str(x) for x in sys.version_info[:3]))" 2^>nul`) do (
+    set "%~2=%%I"
+)
+exit /b 0
+
+:make_wheel_tag
+set "%~2="
+for /f "tokens=1,2 delims=." %%A in ("%~1") do (
+    if not "%%A"=="" if not "%%B"=="" set "%~2=cp%%A%%B"
 )
 exit /b 0
 
@@ -369,9 +611,11 @@ echo   build.bat
 echo       Configure and build openvino, then configure and build openvino.genai.
 echo.
 echo   build.bat --wheel
+echo   build.bat --wheel [--python=3.11.9]
 echo       Build openvino, build openvino.genai, and create Python wheel files in:
-echo       the "wheel" folder under the directory two levels above this build.bat
-echo       The folder is created automatically if needed, and same-name wheel files are replaced.
+echo       the "wheel\cpXY" folder under the directory two levels above this build.bat
+echo       The Python version defaults to the first python.exe in PATH unless --python is specified.
+echo       Wheel build virtual environments are reused under ".wheel-build-venv\<python-version>".
 echo.
 echo   build.bat --help
 echo       Show this help message.
