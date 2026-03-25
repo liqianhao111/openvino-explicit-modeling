@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import difflib
 import importlib.util
 import os
 import subprocess
@@ -422,6 +423,90 @@ def run_dflash(
 # Main
 # ============================================================================
 
+# ============================================================================
+# Text diff comparison
+# ============================================================================
+
+def _text_match_summary(label_a: str, text_a: str, label_b: str, text_b: str) -> List[str]:
+    """Return a concise diff block comparing two output texts."""
+    lines: List[str] = []
+    if text_a == text_b:
+        lines.append(f"  {label_a}  vs  {label_b}  =>  IDENTICAL")
+        return lines
+
+    # Character-level stats
+    sm = difflib.SequenceMatcher(None, text_a, text_b)
+    ratio = sm.ratio()
+    lines.append(f"  {label_a}  vs  {label_b}  =>  DIFFERENT  (similarity {ratio*100:.1f}%)")
+
+    # Line-level unified diff (compact: up to 30 context-trimmed lines)
+    a_lines = text_a.splitlines(keepends=True)
+    b_lines = text_b.splitlines(keepends=True)
+    diff = list(difflib.unified_diff(a_lines, b_lines,
+                                      fromfile=label_a, tofile=label_b,
+                                      lineterm=""))
+    if diff:
+        max_diff_lines = 30
+        for d in diff[:max_diff_lines]:
+            lines.append(f"    {d.rstrip()}")
+        if len(diff) > max_diff_lines:
+            lines.append(f"    ... ({len(diff) - max_diff_lines} more diff lines omitted)")
+
+    return lines
+
+
+def build_text_diff_lines(results: List[RunMetrics]) -> List[str]:
+    """Compare DFlash output texts vs matching baseline (FP16↔FP16, INT4↔INT4)."""
+    baseline_fp16 = None
+    baseline_int4 = None
+    dflash_fp16_targets: List[RunMetrics] = []
+    dflash_int4_targets: List[RunMetrics] = []
+
+    for r in results:
+        if r.label == "Baseline FP16":
+            baseline_fp16 = r
+        elif r.label == "Baseline INT4":
+            baseline_int4 = r
+        elif r.is_dflash and r.target_quant == "FP16":
+            dflash_fp16_targets.append(r)
+        elif r.is_dflash and r.target_quant == "INT4":
+            dflash_int4_targets.append(r)
+
+    lines: List[str] = []
+    has_any = False
+
+    if baseline_fp16 and dflash_fp16_targets:
+        has_any = True
+        lines.append(f"\n{'='*105}")
+        lines.append("  OUTPUT TEXT DIFF: target=FP16 DFlash vs Baseline FP16")
+        lines.append(f"{'='*105}")
+        for dm in dflash_fp16_targets:
+            lines.extend(_text_match_summary(
+                "Baseline FP16", baseline_fp16.output_text,
+                dm.label, dm.output_text))
+            lines.append("")
+
+    if baseline_int4 and dflash_int4_targets:
+        has_any = True
+        lines.append(f"{'='*105}")
+        lines.append("  OUTPUT TEXT DIFF: target=INT4 DFlash vs Baseline INT4")
+        lines.append(f"{'='*105}")
+        for dm in dflash_int4_targets:
+            lines.extend(_text_match_summary(
+                "Baseline INT4", baseline_int4.output_text,
+                dm.label, dm.output_text))
+            lines.append("")
+
+    if not has_any:
+        return []
+
+    return lines
+
+
+# ============================================================================
+# Summary table
+# ============================================================================
+
 def build_summary_lines(results: List[RunMetrics], baseline_fp16: Optional[RunMetrics]) -> List[str]:
     # Find Baseline INT4 in results if it exists
     baseline_int4 = None
@@ -474,6 +559,9 @@ def build_summary_lines(results: List[RunMetrics], baseline_fp16: Optional[RunMe
 def print_table(results: List[RunMetrics], baseline_fp16: Optional[RunMetrics]) -> None:
     for line in build_summary_lines(results, baseline_fp16):
         print(line)
+    diff_lines = build_text_diff_lines(results)
+    for line in diff_lines:
+        print(line)
 
 
 def save_run_report(
@@ -506,6 +594,8 @@ def save_run_report(
     lines.append("")
 
     lines.extend(build_summary_lines(results, baseline_fp16))
+    lines.append("")
+    lines.extend(build_text_diff_lines(results))
     lines.append("")
     lines.append("=" * 105)
     lines.append("PER-CONFIG DETAILS")
