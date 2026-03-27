@@ -95,6 +95,7 @@ cd D:\data\models\Huggingface
 git clone https://huggingface.co/Qwen/Qwen3-4B
 git clone https://huggingface.co/Qwen/Qwen3.5-35B-A3B
 ```
+We could use scripts/download_models.py to download most models easily.
 
 ## 6. Run Samples and Functional Checks
 
