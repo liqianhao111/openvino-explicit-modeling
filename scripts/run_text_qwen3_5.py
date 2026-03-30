@@ -16,7 +16,7 @@ def _safe_int(value: str, default: int) -> int:
 
 
 def _streamer(subword: str) -> bool:
-    """流式输出回调：每个 subword 立即打印到终端。返回 False 表示继续，True 表示停止。"""
+    """Streaming callback: print each subword to terminal. Return False to continue, True to stop."""
     print(subword, end="", flush=True)
     return False
 
@@ -24,12 +24,12 @@ def _streamer(subword: str) -> bool:
 def main():
     default_group_size = _safe_int(os.environ.get("OV_GENAI_INFLIGHT_QUANT_GROUP_SIZE", "128"), 128)
 
-    parser = argparse.ArgumentParser(description="Run Youtu-LLM-2B with LLMPipeline")
+    parser = argparse.ArgumentParser(description="Run Qwen3.5 text model with LLMPipeline")
     parser.add_argument(
         "model_dir",
         nargs="?",
-        default=os.environ.get("YOUTU_LLM_MODEL", r"D:\Data\models\Huggingface\Qwen3.5-35B-A3B"),
-        help="Path to Youtu-LLM-2B HF model (config.json + *.safetensors)",
+        default=os.environ.get("MODEL", r"D:\Data\models\Huggingface\Qwen3.5-35B-A3B"),
+        help="Path to Qwen3.5 HF model (config.json + *.safetensors)",
     )
     parser.add_argument(
         "--device",
@@ -38,7 +38,7 @@ def main():
     )
     parser.add_argument(
         "--prompt",
-        default="你好，请介绍一下你自己。",
+        default="Hello, please introduce yourself.",
         help="Input prompt",
     )
     parser.add_argument(
@@ -68,11 +68,11 @@ def main():
     if not os.path.isdir(args.model_dir):
         raise FileNotFoundError(
             f"Model dir not found: {args.model_dir}\n"
-            "Please download Youtu-LLM-2B from HuggingFace or set YOUTU_LLM_MODEL."
+            "Please download Qwen3.5 from HuggingFace or set MODEL env."
         )
 
     if os.environ.get("OV_GENAI_USE_MODELING_API", "").lower() not in ("1", "true", "yes"):
-        print("Warning: OV_GENAI_USE_MODELING_API is not set to 1. Youtu-LLM requires modeling API.")
+        print("Warning: OV_GENAI_USE_MODELING_API is not set to 1. Qwen3.5 requires modeling API.")
         os.environ["OV_GENAI_USE_MODELING_API"] = "1"
 
     # Configure in-flight quantization through environment variables consumed by C++ backend.
@@ -107,42 +107,44 @@ def main():
     config.presence_penalty = 1.5
     config.repetition_penalty = 1.0
     config.no_repeat_ngram_size = 3
-    
-    # prompts = [
-    #     "Who is Mark Twain?",
-    #     "Who is William Shakespeare?",
-    #     "Who is Agatha Christie?",
-    #     "Who is Barbara Cartland?",
-    #     "Who is Danielle Steel?",
-    #     "Who is Harold Robbins?",
-    #     "Who is Georges Simenon?",
-    #     "Who is Enid Blyton?",
-    #     "Who is Sidney Sheldon?",
-    #     "Who is Akira Toriyama?",
-    #     "Who is Leo Tolstoy?",
-    #     "Who is Alexander Pushkin?",
-    #     "Who is Stephen King?",
-    #     "What is C++?",
-    #     "What is Python?",
-    #     "What is Java?",
-    #     "What is JavaScript?",
-    #     "What is Perl?",
-    #     "What is OpenCV?",
-    #     "Who is the most famous writer?",
-    #     "Who is the most famous inventor?",
-    #     "Who is the most famous mathematician?",
-    #     "Who is the most famous composer?",
-    #     "Who is the most famous programmer?",
-    #     "Who is the most famous athlete?",
-    #     "Who is the most famous ancient Greek scientist?",
-    #     "What color will you get when you mix blue and yellow?",
-    # ]
-    prompts = ["Who is Akira Toriyama?"]
+    config.max_new_tokens = 2048
+
+    prompts = [
+        "Who is Mark Twain?",
+        "Who is William Shakespeare?",
+        "Who is Agatha Christie?",
+        "Who is Barbara Cartland?",
+        "Who is Danielle Steel?",
+        "Who is Harold Robbins?",
+        "Who is Georges Simenon?",
+        "Who is Enid Blyton?",
+        "Who is Sidney Sheldon?",
+        "Who is Akira Toriyama?",
+        "Who is Leo Tolstoy?",
+        "Who is Alexander Pushkin?",
+        "Who is Stephen King?",
+        "What is C++?",
+        "What is Python?",
+        "What is Java?",
+        "What is JavaScript?",
+        "What is Perl?",
+        "What is OpenCV?",
+        "Who is the most famous writer?",
+        "Who is the most famous inventor?",
+        "Who is the most famous mathematician?",
+        "Who is the most famous composer?",
+        "Who is the most famous programmer?",
+        "Who is the most famous athlete?",
+        "Who is the most famous ancient Greek scientist?",
+        "What color will you get when you mix blue and yellow?",
+    ]
+
+
     print("Generated:")
     for p in prompts:
         print(f"\nPrompt: {p}\n", end="")
         result = pipe.generate(p, config, streamer=_streamer)
-        print()  # 流式输出后换行
+        print()  # newline after streaming
 
 if __name__ == "__main__":
     main()

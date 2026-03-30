@@ -1,13 +1,13 @@
 @echo off
 REM ============================================================
-REM Run Youtu-LLM-2B with full environment setup + Python script
+REM Run Qwen3.5 text model with LLMPipeline (e.g. Qwen3.5-35B-A3B, Qwen3.5-MoE)
 REM ============================================================
 REM Usage:
-REM   run_youtu_llm_python.bat [model_path] [--device GPU] [--prompt "your question"]
+REM   run_text_qwen3_5.bat [model_path] [--device GPU] [--prompt "your question"]
 REM Examples:
-REM   run_youtu_llm_python.bat
-REM   run_youtu_llm_python.bat "C:\models\Youtu-LLM-2B"
-REM   run_youtu_llm_python.bat "C:\models\Youtu-LLM-2B" --device GPU --max-new-tokens 256
+REM   run_text_qwen3_5.bat
+REM   run_text_qwen3_5.bat "C:\models\Qwen3.5-35B-A3B"
+REM   run_text_qwen3_5.bat "C:\models\Qwen3.5-35B-A3B" --device GPU --max-new-tokens 256
 REM ============================================================
 
 setlocal
@@ -20,7 +20,7 @@ REM 1. Setup OpenVINO environment (if setupvars exists)
 @REM     call "%OPENVINO_ROOT%openvino\scripts\setupvars\setupvars.bat"
 @REM )
 
-REM 2. Youtu-LLM requires modeling API
+REM 2. Qwen3.5 requires modeling API
 set "OV_GENAI_USE_MODELING_API=1"
 
 REM 2.1 Enable in-flight quantization by default for large Qwen3.5 models.

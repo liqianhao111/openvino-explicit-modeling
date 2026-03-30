@@ -4,13 +4,12 @@
 """
 DFlash quantization benchmark.
 
-Runs 6 configurations and prints a comparison table:
-  Baseline FP16      — pure LLMPipeline, no DFlash
-  Baseline INT4      — pure LLMPipeline, target INT4
-  DFlash FP16/FP16   — DFlash, target=FP16, draft=FP16
-  DFlash INT4/FP16   — DFlash, target=INT4, draft=FP16
-  DFlash FP16/INT4   — DFlash, target=FP16, draft=INT4
-  DFlash INT4/INT4   — DFlash, target=INT4, draft=INT4
+Runs LLM configurations, prints a comparison table:
+    Baseline FP16      — pure LLMPipeline, no DFlash
+    DFlash FP16/FP16   — DFlash, target=FP16, draft=FP16
+    DFlash INT4/FP16   — DFlash, target=INT4, draft=FP16
+    DFlash FP16/INT4   — DFlash, target=FP16, draft=INT4
+    DFlash INT4/INT4   — DFlash, target=INT4, draft=INT4
 
 Per-step acceptance and timing metrics are returned via extended_perf_metrics and
 printed by this script.
@@ -21,8 +20,10 @@ Usage:
 
 import argparse
 import difflib
+import gc
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import time
@@ -87,6 +88,10 @@ def _find_runtime_dll_dirs(genai_dir: Path) -> List[Path]:
 def _find_local_openvino_python_dir(start_dir: Path) -> Optional[Path]:
     search = start_dir
     for _ in range(10):
+        # cmake build dir (most common)
+        candidate = search / "openvino" / "build" / "python"
+        if (candidate / "openvino" / "__init__.py").is_file():
+            return candidate
         for build_type in ("Release", "RelWithDebInfo", "Debug"):
             candidate = search / "openvino" / "bin" / "intel64" / build_type / "python"
             if (candidate / "openvino" / "__init__.py").is_file():
@@ -249,12 +254,14 @@ class StreamMetrics:
 
 
 def build_prompt(prompt: str, no_think: bool) -> str:
-    if not no_think:
-        return prompt
-    return (
-        f"<|im_start|>user\n{prompt}<|im_end|>\n"
-        f"<|im_start|>assistant\n<|im_start|>think\n\n<|im_end|>\n"
-    )
+    # Always return the raw prompt.  Thinking mode is now controlled by the
+    # OV_GENAI_DISABLE_THINKING env var which the C++ pipeline reads when
+    # applying the chat template.
+    if no_think:
+        os.environ["OV_GENAI_DISABLE_THINKING"] = "1"
+    else:
+        os.environ.pop("OV_GENAI_DISABLE_THINKING", None)
+    return prompt
 
 
 def run_with_streaming(pipe, full_prompt: str, config, capture_result: bool = False):
@@ -349,6 +356,11 @@ def run_baseline(
     m.is_dflash = False
     m.target_quant = "INT4" if quant_mode else "FP16"
     m.draft_quant  = "-"
+
+    # Release GPU memory before returning
+    del pipe
+    gc.collect()
+
     return m
 
 
@@ -416,6 +428,194 @@ def run_dflash(
     m.is_dflash = True
     m.target_quant = tq_label
     m.draft_quant  = dq_label
+
+    # Release GPU memory before returning
+    del pipe, draft
+    gc.collect()
+
+    return m
+
+
+# ============================================================================
+# EXE-based runners (subprocess → .exe)
+# ============================================================================
+
+def _get_exe_env() -> dict:
+    """Build environment with DLL paths for .exe subprocess calls."""
+    env = os.environ.copy()
+    root_dir = Path(__file__).resolve().parent.parent
+    dll_dirs = [
+        root_dir / "openvino" / "bin" / "intel64" / "Release",
+        root_dir / "openvino" / "temp" / "Windows_AMD64" / "tbb" / "bin",
+        root_dir / "openvino.genai" / "build" / "openvino_genai",
+        root_dir / "openvino.genai" / "build" / "bin" / "Release",
+    ]
+    extra_path = ";".join(str(d) for d in dll_dirs if d.is_dir())
+    env["PATH"] = f"{extra_path};{env.get('PATH', '')}"
+    return env
+
+
+def _find_exe(name: str) -> str:
+    """Locate a .exe in the build directory."""
+    root_dir = Path(__file__).resolve().parent.parent
+    for build_type in ("Release", "Debug"):
+        p = root_dir / "openvino.genai" / "build" / "bin" / build_type / name
+        if p.is_file():
+            return str(p)
+    raise FileNotFoundError(f"Cannot find {name}")
+
+
+def _parse_exe_metrics(stdout: str) -> RunMetrics:
+    """Parse stdout from modeling_qwen3_5*.exe into RunMetrics."""
+    m = RunMetrics()
+
+    def _float(pattern: str, default: float = 0.0) -> float:
+        match = re.search(pattern, stdout)
+        return float(match.group(1)) if match else default
+
+    def _int(pattern: str, default: int = 0) -> int:
+        match = re.search(pattern, stdout)
+        return int(match.group(1)) if match else default
+
+    m.generated_tokens = _int(r"Output token size:\s*(\d+)")
+    m.ttft_ms = _float(r"TTFT:\s*([\d.]+)\s*ms")
+    decode_ms = _float(r"Decode time:\s*([\d.]+)\s*ms")
+    m.tpot_ms = _float(r"TPOT:\s*([\d.]+)\s*ms/token")
+    m.e2e_ms = m.ttft_ms + decode_ms
+
+    # DFlash-specific fields (only present in dflash exe output)
+    m.draft_steps = _int(r"Draft steps:\s*(\d+)")
+    m.accepted_draft_tokens = _int(r"Accepted draft tokens:\s*(\d+)")
+    m.draft_acceptance_rate = _float(r"Acceptance rate:\s*([\d.]+)")
+    m.avg_accepted_per_step = _float(r"Avg accepted per step:\s*([\d.]+)")
+
+    # Extract output text between [Output] and [Generation Complete]
+    output_match = re.search(r"\[Output\]\n(.*?)\n\n\[Generation Complete\]", stdout, re.DOTALL)
+    if output_match:
+        m.output_text = output_match.group(1).strip()
+    else:
+        # modeling_qwen3_5.exe prints output directly after metrics
+        # Try to capture the last large text block
+        lines = stdout.strip().split("\n")
+        # Find the line after "Throughput:" and take everything after
+        for i, line in enumerate(lines):
+            if line.startswith("Throughput:") or line.startswith("TPOT: N/A"):
+                remaining = "\n".join(lines[i+1:]).strip()
+                if remaining:
+                    m.output_text = remaining
+                break
+
+    return m
+
+
+def _run_exe(cmd: list, label: str, env: dict) -> tuple:
+    """Run an exe and return (proc, stdout). Prints output."""
+    print(f"[exe] {Path(cmd[0]).name}")
+    print("--- output ---")
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
+    print(proc.stdout[-3000:] if len(proc.stdout) > 3000 else proc.stdout)
+    if proc.returncode != 0:
+        print(f"[exe] FAILED (rc={proc.returncode})", file=sys.stderr)
+        if proc.stderr:
+            print(proc.stderr[-1000:], file=sys.stderr)
+    print("--- end ---")
+    return proc
+
+
+def run_baseline_exe(
+    model_dir: str,
+    prompt: str,
+    device: str,
+    max_tokens: int,
+    quant_mode: Optional[str] = None,
+) -> RunMetrics:
+    """Run baseline via modeling_qwen3_5.exe (no DFlash)."""
+    qmode = "INT4" if quant_mode else "FP16"
+    label = f"Baseline {qmode}"
+    print(f"\n{'='*70}")
+    print(f"  {label}")
+    print(f"{'='*70}")
+
+    exe_path = _find_exe("modeling_qwen3_5.exe")
+    cmd = [exe_path, "--model", model_dir, "--prompt", prompt,
+           "--device", device, "--output-tokens", str(max_tokens),
+           "--temperature", "0", "--think", "0", "--mode", "text"]
+
+    # Set quantization via env vars
+    env = _get_exe_env()
+    if quant_mode:
+        env["OV_GENAI_INFLIGHT_QUANT_MODE"] = quant_mode.lower().replace("_", "_")
+        env["OV_GENAI_INFLIGHT_QUANT_GROUP_SIZE"] = "128"
+    else:
+        env.pop("OV_GENAI_INFLIGHT_QUANT_MODE", None)
+        env.pop("OV_GENAI_INFLIGHT_QUANT_GROUP_SIZE", None)
+
+    proc = _run_exe(cmd, label, env)
+    if proc.returncode != 0:
+        m = RunMetrics()
+        m.label = label
+        return m
+
+    m = _parse_exe_metrics(proc.stdout)
+    m.label = label
+    m.is_dflash = False
+    m.target_quant = qmode
+    m.draft_quant = "-"
+
+    print(f"ttft={m.ttft_ms:.1f}ms  tpot={m.tpot_ms:.2f}ms  e2e={m.e2e_ms:.1f}ms  tokens={m.generated_tokens}")
+    return m
+
+
+def run_dflash_exe(
+    model_dir: str,
+    draft_dir: str,
+    prompt: str,
+    device: str,
+    max_tokens: int,
+    target_quant: Optional[str],
+    draft_quant: Optional[str],
+    block_size: int = 16,
+) -> RunMetrics:
+    """Run DFlash via subprocess (modeling_qwen3_5_dflash.exe)."""
+    tq_label = "INT4" if target_quant else "FP16"
+    dq_label = "INT4" if draft_quant else "FP16"
+    label = f"DFlash  target={tq_label}  draft={dq_label}"
+    print(f"\n{'='*70}")
+    print(f"  {label}")
+    print(f"{'='*70}")
+
+    exe_path = _find_exe("modeling_qwen3_5_dflash.exe")
+    tq_arg = target_quant or "FP16"
+    dq_arg = draft_quant or "FP16"
+
+    cmd = [exe_path, model_dir, draft_dir, prompt, device,
+           str(max_tokens), str(block_size), tq_arg, dq_arg]
+
+    print(f"[exe] target_quant={tq_arg}  draft_quant={dq_arg}")
+
+    env = _get_exe_env()
+    proc = _run_exe(cmd, label, env)
+    if proc.returncode != 0:
+        m = RunMetrics()
+        m.label = label
+        m.is_dflash = True
+        m.target_quant = tq_label
+        m.draft_quant = dq_label
+        return m
+
+    m = _parse_exe_metrics(proc.stdout)
+    m.label = label
+    m.is_dflash = True
+    m.target_quant = tq_label
+    m.draft_quant = dq_label
+
+    print(f"ttft={m.ttft_ms:.1f}ms  tpot={m.tpot_ms:.2f}ms  e2e={m.e2e_ms:.1f}ms  tokens={m.generated_tokens}")
+    if m.draft_steps > 0:
+        print(f"[DFlash] draft_steps={m.draft_steps}  "
+              f"accepted_draft={m.accepted_draft_tokens}  "
+              f"avg_per_step={m.avg_accepted_per_step:.2f}  "
+              f"acceptance_rate={m.draft_acceptance_rate*100:.1f}%")
+
     return m
 
 
@@ -513,13 +713,12 @@ def build_summary_lines(results: List[RunMetrics], baseline_fp16: Optional[RunMe
     for r in results:
         if r.label == "Baseline INT4":
             baseline_int4 = r
-            break
 
     lines: List[str] = []
     lines.append(f"\n{'='*105}")
     lines.append("  BENCHMARK SUMMARY")
     lines.append(f"{'='*105}")
-    lines.append("  Note: Speedup computed relative to matching baseline:")
+    lines.append("  Note: Speedup = Baseline_TPOT / DFlash_TPOT (decode speed improvement):")
     lines.append("        - target=FP16 configs use Baseline FP16")
     lines.append("        - target=INT4 configs use Baseline INT4")
     lines.append(f"{'='*105}")
@@ -538,13 +737,9 @@ def build_summary_lines(results: List[RunMetrics], baseline_fp16: Optional[RunMe
                 baseline_to_use = baseline_int4
             else:  # target=FP16
                 baseline_to_use = baseline_fp16
-        else:
-            # Skip speedup calculation for baseline entries themselves
-            if m.label != "Baseline FP16" and m.label != "Baseline INT4":
-                baseline_to_use = baseline_fp16
         
-        if baseline_to_use and baseline_to_use.e2e_ms > 0 and m.e2e_ms > 0:
-            speedup = f"{baseline_to_use.e2e_ms / m.e2e_ms:.2f}x"
+        if baseline_to_use and baseline_to_use.tpot_ms > 0 and m.tpot_ms > 0:
+            speedup = f"{baseline_to_use.tpot_ms / m.tpot_ms:.2f}x"
         
         accept_pct = f"{m.draft_acceptance_rate*100:.1f}%" if m.is_dflash else "-"
         avg_acc    = f"{m.avg_accepted_per_step:.2f}" if m.is_dflash else "-"
@@ -568,9 +763,11 @@ def save_run_report(
     args: argparse.Namespace,
     results: List[RunMetrics],
     baseline_fp16: Optional[RunMetrics],
+    report_dir: Optional[Path] = None,
 ) -> Path:
-    repo_root = Path(__file__).resolve().parents[1]
-    report_dir = repo_root / "dflash优化报告"
+    if report_dir is None:
+        repo_root = Path(__file__).resolve().parents[1]
+        report_dir = repo_root / "dflash优化报告"
     report_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -659,8 +856,9 @@ def main():
                         help="DFlash draft model directory")
     parser.add_argument("prompt",          
                         nargs="?",
+                        default="Apple today unveiled MacBook Neo, an all-new laptop that delivers the magic of the Mac at a breakthrough price, making it even more accessible to millions of people around the world. MacBook Neo starts with a beautiful Apple design, featuring a durable aluminum enclosure in an array of gorgeous colors — blush, indigo, silver, and a fresh new citrus. Its stunning 13-inch Liquid Retina display brings websites, photos, videos, and apps to life with high resolution and brightness, and support for 1 billion colors. Powered by A18 Pro, MacBook Neo can fly through everyday tasks, from browsing the web and streaming content, to editing photos, exploring creative hobbies, or using AI capabilities across apps. In fact, it’s up to 50 percent faster for everyday tasks like web browsing,1 and up to 3x faster when running on-device AI workloads like applying advanced effects to photos,2 compared to the bestselling PC with the latest shipping Intel Core Ultra 5. Providing up to 16 hours of battery life, MacBook Neo allows users to go all day on a single charge.3 A 1080p FaceTime HD camera and dual mics make it easy to look and sound great, and the dual side-firing speakers with Spatial Audio deliver crisp, immersive sound. MacBook Neo also features Apple’s renowned Magic Keyboard for comfortable and precise typing, and a large Multi-Touch trackpad with support for intuitive gestures, enabling smooth and precise control. Completing the MacBook Neo experience is macOS Tahoe, with powerful built-in apps like Messages, Pages, Calendar, and Safari; seamless integration with iPhone; Apple Intelligence; as well as broad compatibility with third-party apps. And starting at just $599 and $499 for education, MacBook Neo is Apple’s most affordable laptop ever, providing an unprecedented combination of quality and value. MacBook Neo is available to pre-order starting today, with availability beginning Wednesday, March 11. “We’re incredibly excited to introduce MacBook Neo, which delivers the magic of the Mac at a breakthrough price,” said John Ternus, Apple’s senior vice president of Hardware Engineering. “Built from the ground up to be more affordable for even more people, MacBook Neo is a laptop only Apple could create. It features a durable aluminum design in four beautiful colors; a brilliant Liquid Retina display; Apple silicon-powered performance; all-day battery life; a high-quality camera, mics, and speakers; a Magic Keyboard and Multi-Touch trackpad; and the intuitive and powerful features of macOS. There is simply no other laptop like it.” MacBook Neo provides an unmatched combination of quality and affordability for students, families, small business owners, new Mac users, and more. MacBook Neo features a beautifully crafted aluminum design that’s built to last. With its soft, rounded corners, MacBook Neo looks elegant while feeling solid and comfortable to hold. At just 2.7 pounds, it’s also easy to carry in a backpack or handbag. Bringing a fun touch of personality and style to everyday computing, MacBook Neo comes in a spectrum of four gorgeous colors: blush, indigo, silver, and citrus. These colors extend to the Magic Keyboard in lighter shades and new wallpapers, creating a cohesive design aesthetic and making MacBook Neo the most colorful MacBook yet. A gorgeous 13-inch Liquid Retina display features a 2408-by-1506 resolution, 500 nits of brightness, and support for 1 billion colors, bringing to life sharp, crystal-clear text and vibrant images. The display is both brighter and higher in resolution than most PC laptops in this price range, putting it in a class of its own. Finally, an anti-reflective coating provides a comfortable viewing experience in a variety of lighting conditions, allowing users to watch movies, edit photos, or take video calls from anywhere. An open MacBook Neo in indigo shows a vibrant photo of a person laying in a field of flowers. The 13-inch Liquid Retina display on MacBook Neo brings to life sharp, crystal-clear text and vibrant images. At the heart of MacBook Neo is A18 Pro, enabling users to power through things they do every day, like browsing the web, creating documents, streaming content, editing photos, and taking advantage of AI. Users can seamlessly work between their favorite apps, like Messages, WhatsApp, Canva, Excel, Safari, and more. MacBook Neo with A18 Pro is up to 50 percent faster for everyday tasks than the bestselling PC with the latest shipping Intel Core Ultra 5.1 And for more demanding activities, it’s up to 3x faster for on-device AI workloads2 and up to 2x faster for tasks like photo editing.4 The integrated 5-core GPU brings graphics to life while playing action-packed games or exploring creative hobbies. And a 16-core Neural Engine supports fast on-device Apple Intelligence features and everyday AI tasks like summarizing notes in Bear or using the Clean Up tool in the Photos app, while ensuring user data stays private and secure. MacBook Neo is also fanless, so it runs completely silent. With A18 Pro, MacBook Neo can power through a wide range of everyday tasks, from browsing the web to sending emails and effortlessly multitasking between apps.",
                         #default="who are you?",
-                        default="Joy can read 8 pages of a book in 20 minutes. How many hours will it take her to read 120 pages?",
+                        # default="Joy can read 8 pages of a book in 20 minutes. How many hours will it take her to read 120 pages?",
                         help="Input prompt")
     parser.add_argument("--device",        default="GPU")
     parser.add_argument("--max-tokens",    type=int, default=512)
@@ -717,16 +915,7 @@ def main():
         results.append(m)
         baseline_fp16 = m
 
-    # ── 2. Baseline INT4 ────────────────────────────────────────────────────
-    # Uses in-flight INT4_ASYM quantization via safetensors loader (same mechanism as DFlash).
-    # Works for safetensors model directories; cached openvino_model.xml is bypassed.
-    if not args.skip_baseline and not args.skip_baseline_int4:
-        m = run_baseline(args.model_dir, args.prompt, args.device,
-                         args.max_tokens, args.no_think, quant_mode="INT4_ASYM")
-        m.label = "Baseline INT4"
-        results.append(m)
-
-    # ── 3. DFlash FP16 / FP16 ───────────────────────────────────────────────
+    # ── 2. DFlash FP16 / FP16 ───────────────────────────────────────────────
     if not args.skip_dflash_fp16_fp16:
         m = run_dflash(args.model_dir, args.draft_model_dir, args.prompt,
                        args.device, args.max_tokens, args.no_think,
@@ -734,19 +923,26 @@ def main():
                        inference_precision=args.precision)
         results.append(m)
 
-    # ── 4. DFlash INT4 / FP16 ───────────────────────────────────────────────
-    if not args.skip_dflash_int4_fp16:
-        m = run_dflash(args.model_dir, args.draft_model_dir, args.prompt,
-                       args.device, args.max_tokens, args.no_think,
-                       target_quant="INT4_ASYM", draft_quant=None,
-                       inference_precision=args.precision)
-        results.append(m)
-
-    # ── 5. DFlash FP16 / INT4 ───────────────────────────────────────────────
+    # ── 3. DFlash FP16 / INT4 ───────────────────────────────────────────────
     if not args.skip_dflash_fp16_int4:
         m = run_dflash(args.model_dir, args.draft_model_dir, args.prompt,
                        args.device, args.max_tokens, args.no_think,
                        target_quant=None, draft_quant="INT4_ASYM",
+                       inference_precision=args.precision)
+        results.append(m)
+
+    # ── 4. Baseline INT4 ────────────────────────────────────────────────────
+    if not args.skip_baseline and not args.skip_baseline_int4:
+        m = run_baseline(args.model_dir, args.prompt, args.device,
+                         args.max_tokens, args.no_think, quant_mode="INT4_ASYM")
+        m.label = "Baseline INT4"
+        results.append(m)
+
+    # ── 5. DFlash INT4 / FP16 ───────────────────────────────────────────────
+    if not args.skip_dflash_int4_fp16:
+        m = run_dflash(args.model_dir, args.draft_model_dir, args.prompt,
+                       args.device, args.max_tokens, args.no_think,
+                       target_quant="INT4_ASYM", draft_quant=None,
                        inference_precision=args.precision)
         results.append(m)
 
@@ -758,12 +954,18 @@ def main():
                        inference_precision=args.precision)
         results.append(m)
 
+    # ── Print LLM table ─────────────────────────────────────────────────────
     print_table(results, baseline_fp16)
-    try:
-        report_path = save_run_report(args, results, baseline_fp16)
-        print(f"[Report] Saved run report: {report_path}")
-    except OSError as exc:
-        print(f"[Report] Failed to save run report: {exc}", file=sys.stderr)
+
+    # ── Save report (Python pipeline → dflash优化报告/) ────────────────────
+    repo_root = Path(__file__).resolve().parents[1]
+    if results:
+        try:
+            report_path = save_run_report(args, results, baseline_fp16,
+                                          report_dir=repo_root / "dflash优化报告")
+            print(f"[Report] report: {report_path}")
+        except OSError as exc:
+            print(f"[Report] Failed to save report: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

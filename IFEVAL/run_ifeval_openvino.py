@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-# Copyright (C) 2025 Intel Corporation
-# SPDX-License-Identifier: Apache-2.0
-"""
-One-click IFEval benchmark (LLMPipeline, same setup as run_text_qwen3_5).
-Reads local data/input_data.jsonl, generates responses, then runs evaluation_main.py.
-"""
 
 from __future__ import annotations
 
@@ -166,7 +159,7 @@ def main():
 
     pipe = openvino_genai.LLMPipeline(args.model_dir, args.device)
     config = openvino_genai.GenerationConfig()
-    config.max_new_tokens = args.max_new_tokens
+    config.max_new_tokens = 512
     config.do_sample = True
     config.temperature = 1.0
     config.top_p = 0.95

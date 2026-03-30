@@ -2,12 +2,12 @@
 # Copyright (C) 2025 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 """
-测试 VLMPipeline 加载 Qwen3.5 VL 模型并进行图像+文本推理。
+Test VLMPipeline with Qwen3.5 VL model for image + text inference.
 
-模型要求：config.json 中 model_type 为 qwen3_5 或 qwen3_5_moe，且包含 vision_config。
-例如：Qwen3-VL-30B-A3B-Instruct、Qwen3.5-VL 等。
+Model requirement: config.json model_type must be qwen3_5 or qwen3_5_moe, with vision_config.
+Examples: Qwen3-VL-30B-A3B-Instruct, Qwen3.5-VL, Qwen3.5-MoE-VL.
 
-依赖: pip install pillow
+Requires: pip install pillow
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import sys
 import time
 from pathlib import Path
 
-# === 推断 OPENVINO_ROOT，确保 openvino / openvino_genai 可导入 ===
+# === Infer OPENVINO_ROOT for openvino / openvino_genai imports ===
 _openvino_root = os.environ.get("OPENVINO_ROOT")
 if _openvino_root:
     _openvino_root = Path(_openvino_root).resolve()
@@ -31,9 +31,9 @@ for _p in (_ov_python, _ov_genai):
     if _p.exists() and str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-# === 必须在 import openvino 之前执行：Windows 下预注册 DLL 搜索路径 ===
-# 解决 "cannot import name 'AxisSet' from 'openvino._pyopenvino' (unknown location)"
-# 原因：_pyopenvino.pyd 依赖 openvino.dll 等，需在加载前 add_dll_directory
+# === Must run before import openvino: pre-register DLL search paths on Windows ===
+# Fixes "cannot import name 'AxisSet' from 'openvino._pyopenvino' (unknown location)"
+# _pyopenvino.pyd depends on openvino.dll etc., need add_dll_directory before load
 if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
     _dll_paths = [
         _openvino_root / "openvino" / "bin" / "intel64" / "Release",
@@ -45,7 +45,7 @@ if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
     for _p in _dll_paths:
         if _p.exists():
             os.add_dll_directory(str(_p))
-    # 若 bat 已设置 OPENVINO_LIB_PATHS，也加入（可能有额外路径）
+    # Also add OPENVINO_LIB_PATHS from bat if set
     for _ep in os.environ.get("OPENVINO_LIB_PATHS", "").split(";"):
         _ep = _ep.strip()
         if not _ep:
@@ -56,7 +56,7 @@ if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
 
 import numpy as np
 
-# 确保 modeling API 已启用
+# Ensure modeling API is enabled
 if os.environ.get("OV_GENAI_USE_MODELING_API", "").lower() not in ("1", "true", "yes"):
     os.environ["OV_GENAI_USE_MODELING_API"] = "1"
 
@@ -69,7 +69,7 @@ except ImportError:
     raise SystemExit("Missing dependency: pip install pillow") from None
 
 
-# 默认路径
+# Default paths
 DEFAULT_MODEL = os.environ.get(
     "QWEN3_VL_MODEL",
     os.environ.get("YOUTU_LLM_MODEL", r"D:\Data\models\Huggingface\Qwen3.5-35B-A3B"),
@@ -85,20 +85,20 @@ def _safe_int(value: str, default: int) -> int:
 
 
 def _streamer(subword: str) -> bool:
-    """流式输出回调"""
+    """Streaming output callback"""
     print(subword, end="", flush=True)
     return False
 
 
 def read_image(path: str) -> Tensor:
-    """读取图片并转换为 OpenVINO Tensor (RGB, uint8)"""
+    """Read image and convert to OpenVINO Tensor (RGB, uint8)"""
     pic = Image.open(path).convert("RGB")
     arr = np.array(pic, dtype=np.uint8)
     return Tensor(arr)
 
 
 def read_images(path: str) -> list[Tensor]:
-    """读取单张图片或目录下所有图片"""
+    """Read single image or all images from directory"""
     entry = Path(path)
     if entry.is_dir():
         return [read_image(str(f)) for f in sorted(entry.iterdir()) if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp", ".bmp")]
@@ -156,7 +156,7 @@ def main():
     )
     parser.add_argument(
         "--prompt",
-        default="请描述这张图片的内容。",
+        default="Describe the content of this image.",
         help="Input prompt for the image",
     )
     parser.add_argument(
@@ -227,7 +227,7 @@ def main():
         images = [Tensor(np.random.randint(0, 255, (336, 336, 3), dtype=np.uint8))]
         print("[INFO] Using synthetic test image 336x336")
     elif not args.image_path or not Path(args.image_path).exists():
-        # 默认 scripts/test.jpg 不存在时使用合成图
+        # Use synthetic image when scripts/test.jpg not found
         images = [Tensor(np.random.randint(0, 255, (336, 336, 3), dtype=np.uint8))]
         print(f"[INFO] Image not found: {args.image_path}, using synthetic test image")
     else:
@@ -235,7 +235,7 @@ def main():
         if not images:
             raise ValueError(f"No valid images found in: {args.image_path}")
 
-    # 配置 in-flight 量化
+    # Configure in-flight quantization
     quant_mode = (args.inflight_quant_mode or "").strip().lower()
     if quant_mode in ("", "none", "off", "disable", "disabled", "0"):
         os.environ.pop("OV_GENAI_INFLIGHT_QUANT_MODE", None)
@@ -281,7 +281,7 @@ def main():
 
     streamer = None if args.no_stream else _streamer
 
-    # --- 手动计时：记录首 token 时间需要用 streamer 回调 ---
+    # Manual timing: need streamer callback to record first-token time
     _timing: dict = {"first_token_ms": None, "generate_start": None}
 
     _orig_streamer = streamer
