@@ -13,7 +13,7 @@ Usage:
     python benchmark_dflash_inputs.py --quant FP16          # use FP16 instead of INT4_SYM
     python benchmark_dflash_inputs.py --dry-run             # print configs without running
 
-Build first:  C:\\chuansheng\\src_code\\openvino-explicit-modeling\\build.bat
+Build first:  build.bat (from openvino-explicit-modeling root)
 """
 
 import argparse
@@ -28,14 +28,16 @@ from datetime import datetime
 from pathlib import Path
 
 # ═════════════════════════════════════════════════════════════════
-# Configuration
+# Configuration — all paths derived from script location
 # ═════════════════════════════════════════════════════════════════
 
-ROOT_DIR = Path(r"C:\chuansheng\src_code")
-MODEL_DIR = Path(r"E:\data\models\Huggingface\Qwen3.5-4B")
-DRAFT_DIR = Path(r"E:\data\models\Huggingface\Qwen3.5-4B-Dflash")
+# <repo>/scripts/benchmark_dflash_inputs.py → <repo> → <root>
+SCRIPT_DIR = Path(__file__).resolve().parent          # .../openvino-explicit-modeling/scripts
+OEM_DIR    = SCRIPT_DIR.parent                        # .../openvino-explicit-modeling
+ROOT_DIR   = OEM_DIR.parent                           # .../src_code (workspace root)
+
+DEFAULT_MODEL_DIR = None  # Override with --models-root CLI arg
 DEVICE = "GPU"
-REPORT_DIR = ROOT_DIR / "dflash_exe_reports"
 
 DLL_DIRS = [
     ROOT_DIR / "openvino" / "bin" / "intel64" / "Release",
@@ -49,6 +51,8 @@ EXE_CANDIDATES = [
     ROOT_DIR / "openvino.genai" / "build" / "bin" / "modeling_qwen3_5_dflash.exe",
     ROOT_DIR / "openvino.genai" / "build" / "bin" / "Release" / "modeling_qwen3_5_dflash.exe",
 ]
+
+REPORT_DIR = ROOT_DIR / "dflash_exe_reports"
 
 QUESTIONS = [
     {
@@ -157,7 +161,7 @@ def find_exe() -> Path:
         if p.exists():
             return p
     print("ERROR: DFlash exe not found. Build first:")
-    print("  C:\\chuansheng\\src_code\\openvino-explicit-modeling\\build.bat")
+    print(f"  {OEM_DIR / 'build.bat'}")
     sys.exit(1)
 
 
@@ -197,11 +201,12 @@ def parse_output(stdout: str) -> dict:
 
 
 def run_dflash(exe: Path, prompt: str, max_tokens: int, block_size: int,
-               target_quant: str, draft_quant: str) -> str:
+               target_quant: str, draft_quant: str,
+               model_dir: Path = None, draft_dir: Path = None) -> str:
     """Run the DFlash exe and return stdout."""
     cmd = [
         str(exe),
-        str(MODEL_DIR), str(DRAFT_DIR),
+        str(model_dir), str(draft_dir),
         prompt, DEVICE,
         str(max_tokens), str(block_size),
         target_quant, draft_quant,
@@ -235,8 +240,19 @@ def main():
     parser.add_argument("--quant", default="INT4_SYM", help="Quantization for target+draft (default: INT4_SYM)")
     parser.add_argument("--runs", type=int, default=1, help="Runs per prompt (default: 1)")
     parser.add_argument("--categories", default=None, help="Comma-separated indices (0-9) to run subset")
+    parser.add_argument("--models-root", type=str, default=None,
+                        help="Root dir for HF models (default: auto-detect from script location)")
     parser.add_argument("--dry-run", action="store_true", help="Print config without running")
     args = parser.parse_args()
+
+    # Resolve model paths
+    if args.models_root:
+        models_root = Path(args.models_root)
+    else:
+        print("ERROR: --models-root is required (dir containing Qwen3.5-4B and Qwen3.5-4B-Dflash)")
+        sys.exit(1)
+    model_dir = models_root / "Qwen3.5-4B"
+    draft_dir = models_root / "Qwen3.5-4B-Dflash"
 
     setup_env()
     exe = find_exe()
@@ -256,6 +272,8 @@ def main():
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 80)
     print(f"  Categories     : {len(questions)}")
+    print(f"  Model          : {model_dir}")
+    print(f"  Draft model    : {draft_dir}")
     print(f"  Max new tokens : {args.max_tokens}")
     print(f"  Block size     : {args.block_size}")
     print(f"  Quantization   : {args.quant}")
@@ -292,6 +310,7 @@ def main():
                 stdout = run_dflash(
                     exe, q["prompt"], args.max_tokens, args.block_size,
                     args.quant, args.quant,
+                    model_dir=model_dir, draft_dir=draft_dir,
                 )
                 m = parse_output(stdout)
                 res = RunResult(
